@@ -68,14 +68,28 @@ Kirigami.Page {
             if (Object.keys(data).length === 0) {
                 return;
             }
-            openForEdit(data.uid, data.summary, data.description, data.location,
+            openForEdit(data.uid, data.calendarId, data.summary, data.description, data.location,
                          data.start, data.end, data.allDay, data.color,
                          data.recurrence, data.reminderMinutes, data.busy);
         }
     }
 
-    ColumnLayout {
+    RowLayout {
         anchors.fill: parent
+        spacing: 0
+
+        CalendarSidebar {
+            Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+            Layout.fillHeight: true
+        }
+
+        Kirigami.Separator {
+            Layout.fillHeight: true
+        }
+
+        ColumnLayout {
+        Layout.fillWidth: true
+        Layout.fillHeight: true
         spacing: 0
 
         Controls.TabBar {
@@ -122,6 +136,7 @@ Kirigami.Page {
                 }
                 onNewEventRequested: (start, end) => editDialog.openForCreate(start, end)
             }
+        }
         }
     }
 }

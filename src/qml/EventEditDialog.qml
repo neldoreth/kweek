@@ -15,8 +15,11 @@ Kirigami.Dialog {
 
     readonly property var colors: ["#7B61FF", "#FF7A59", "#36CFC9", "#F2C94C", "#6FCF97", "#EB5757"]
 
+    property string originalCalendarId: ""
+
     function reset() {
         uid = "";
+        originalCalendarId = "";
         summaryField.text = "";
         descriptionField.text = "";
         locationField.text = "";
@@ -26,7 +29,9 @@ Kirigami.Dialog {
         busyCheck.checked = true;
         recurrenceCombo.currentIndex = 0;
         reminderCombo.currentIndex = 0;
+        useCalendarColorCheck.checked = true;
         colorRow.selectedColor = colors[0];
+        calendarCombo.currentIndex = 0;
     }
 
     function openForCreate(start, end) {
@@ -36,9 +41,10 @@ Kirigami.Dialog {
         root.open();
     }
 
-    function openForEdit(eventUid, summary, description, location, start, end, allDay, color, recurrence, reminderMinutes, busy) {
+    function openForEdit(eventUid, calendarId, summary, description, location, start, end, allDay, color, recurrence, reminderMinutes, busy) {
         reset();
         uid = eventUid;
+        originalCalendarId = calendarId;
         summaryField.text = summary;
         descriptionField.text = description;
         locationField.text = location;
@@ -55,7 +61,16 @@ Kirigami.Dialog {
         reminderCombo.currentIndex = reminderIndex >= 0 ? reminderIndex : 0;
 
         if (color.length > 0) {
+            useCalendarColorCheck.checked = false;
             colorRow.selectedColor = color;
+        }
+
+        const calendars = CalendarManager.calendars;
+        for (let i = 0; i < calendars.length; i++) {
+            if (calendars[i].id === calendarId) {
+                calendarCombo.currentIndex = i;
+                break;
+            }
         }
 
         root.open();
@@ -66,14 +81,19 @@ Kirigami.Dialog {
         const end = Date.fromLocaleString(Qt.locale(), endField.text, "yyyy-MM-dd HH:mm");
         const recurrence = ["none", "daily", "weekly", "monthly", "yearly"][recurrenceCombo.currentIndex];
         const reminderMinutes = [-1, 5, 15, 30, 60, 1440][reminderCombo.currentIndex];
+        const color = useCalendarColorCheck.checked ? "" : colorRow.selectedColor;
+        const calendarId = calendarCombo.currentValue;
 
         if (uid.length > 0) {
+            if (calendarId !== originalCalendarId) {
+                CalendarManager.moveEventToCalendar(uid, calendarId);
+            }
             CalendarManager.updateEvent(uid, summaryField.text, descriptionField.text, locationField.text,
-                                         start, end, allDayCheck.checked, colorRow.selectedColor,
+                                         start, end, allDayCheck.checked, color,
                                          recurrence, reminderMinutes, busyCheck.checked);
         } else {
-            CalendarManager.addEvent(summaryField.text, descriptionField.text, locationField.text,
-                                      start, end, allDayCheck.checked, colorRow.selectedColor,
+            CalendarManager.addEvent(calendarId, summaryField.text, descriptionField.text, locationField.text,
+                                      start, end, allDayCheck.checked, color,
                                       recurrence, reminderMinutes, busyCheck.checked);
         }
 
@@ -85,6 +105,14 @@ Kirigami.Dialog {
 
         Kirigami.FormLayout {
             Layout.fillWidth: true
+
+            Controls.ComboBox {
+                id: calendarCombo
+                Kirigami.FormData.label: i18nc("@label:listbox", "Calendar:")
+                model: CalendarManager.calendars
+                textRole: "name"
+                valueRole: "id"
+            }
 
             Controls.TextField {
                 id: summaryField
@@ -154,9 +182,16 @@ Kirigami.Dialog {
                 ]
             }
 
+            Controls.CheckBox {
+                id: useCalendarColorCheck
+                Kirigami.FormData.label: i18nc("@label", "Color:")
+                text: i18nc("@option:check", "Use calendar color")
+                checked: true
+            }
+
             RowLayout {
                 id: colorRow
-                Kirigami.FormData.label: i18nc("@label", "Color:")
+                visible: !useCalendarColorCheck.checked
 
                 property string selectedColor: root.colors[0]
 

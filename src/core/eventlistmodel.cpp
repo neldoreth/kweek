@@ -109,8 +109,10 @@ QVariant EventListModel::data(const QModelIndex &index, int role) const
         return occurrence.end;
     case AllDayRole:
         return incidence->allDay();
-    case ColorRole:
-        return incidence->customProperty(kPropertyApp, kColorProperty);
+    case ColorRole: {
+        const QString override = incidence->customProperty(kPropertyApp, kColorProperty);
+        return override.isEmpty() ? occurrence.calendarColor : override;
+    }
     case RecurringRole:
         return incidence->recurs();
     case RecurrenceRole: {
@@ -141,6 +143,8 @@ QVariant EventListModel::data(const QModelIndex &index, int role) const
         const Event::Ptr event = incidence.dynamicCast<Event>();
         return event && event->transparency() == Event::Opaque;
     }
+    case CalendarIdRole:
+        return occurrence.calendarId;
     default:
         return {};
     }
@@ -161,6 +165,7 @@ QHash<int, QByteArray> EventListModel::roleNames() const
         {RecurrenceRole, "recurrence"},
         {ReminderMinutesRole, "reminderMinutes"},
         {BusyRole, "busy"},
+        {CalendarIdRole, "calendarId"},
     };
 }
 
@@ -185,10 +190,16 @@ void EventListModel::refresh()
     m_occurrences.clear();
 
     if (m_calendarManager && m_rangeStart.isValid() && m_rangeEnd.isValid()) {
-        OccurrenceIterator it(*m_calendarManager->calendar(), m_rangeStart, m_rangeEnd);
-        while (it.hasNext()) {
-            it.next();
-            m_occurrences.append({it.incidence()->uid(), it.occurrenceStartDate(), it.occurrenceEndDate(), it.incidence()});
+        for (const CalendarManager::LocalCalendar &cal : m_calendarManager->localCalendars()) {
+            if (!cal.visible) {
+                continue;
+            }
+
+            OccurrenceIterator it(*cal.calendar, m_rangeStart, m_rangeEnd);
+            while (it.hasNext()) {
+                it.next();
+                m_occurrences.append({it.incidence()->uid(), it.occurrenceStartDate(), it.occurrenceEndDate(), it.incidence(), cal.id, cal.color});
+            }
         }
 
         std::sort(m_occurrences.begin(), m_occurrences.end(), [](const Occurrence &a, const Occurrence &b) {

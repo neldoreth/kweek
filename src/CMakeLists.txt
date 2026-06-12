@@ -11,6 +11,7 @@ qt_add_qml_module(kweek
         qml/Main.qml
         qml/CalendarPage.qml
         qml/EventEditDialog.qml
+        qml/CalendarSidebar.qml
         qml/AgendaView.qml
         qml/MonthView.qml
         qml/WeekView.qml

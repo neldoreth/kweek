@@ -36,6 +36,7 @@ public:
         RecurrenceRole,
         ReminderMinutesRole,
         BusyRole,
+        CalendarIdRole,
     };
 
     explicit EventListModel(QObject *parent = nullptr);
@@ -69,6 +70,8 @@ private:
         QDateTime start;
         QDateTime end;
         KCalendarCore::Incidence::Ptr incidence;
+        QString calendarId;
+        QString calendarColor;
     };
 
     CalendarManager *m_calendarManager = nullptr;

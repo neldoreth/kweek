@@ -25,20 +25,38 @@ ECM/KDE Frameworks 6.
 Modelo de datos de eventos implementado sobre KCalendarCore:
 
 - `src/core/calendarmanager.h/.cpp` — `CalendarManager` (singleton QML):
-  envuelve un `KCalendarCore::MemoryCalendar` persistido en
-  `~/.local/share/Kweek/Kweek/calendar.ics` (vía `FileStorage`). Expone
-  `addEvent`, `updateEvent`, `removeEvent` y `rescheduleEvent` (posponer/
-  adelantar manteniendo duración) a QML. Cada evento soporta: resumen,
-  descripción, ubicación, inicio/fin, todo el día, color (custom property
-  `X-KDE-KWEEK-COLOR`), recurrencia simple (ninguna/diaria/semanal/mensual/
-  anual), recordatorio (alarma Display N minutos antes) y disponibilidad
+  gestiona una lista de **calendarios locales** (`LocalCalendar`: id, nombre,
+  color, visible), cada uno con su propio `KCalendarCore::MemoryCalendar` +
+  `FileStorage`. Metadatos en `~/.local/share/Kweek/Kweek/calendars.json`;
+  `.ics` por calendario en `~/.local/share/Kweek/Kweek/calendar.ics`
+  (calendario "default"/"Personal", creado automáticamente la primera vez)
+  y `.../calendars/<id>.ics` para el resto. Propiedad `calendars` (lista de
+  mapas id/name/color/visible) y métodos `addCalendar`, `removeCalendar`
+  (no permite borrar el último), `updateCalendar` (nombre+color),
+  `setCalendarVisible`. CRUD de eventos: `addEvent(calendarId, ...)`,
+  `updateEvent`, `removeEvent`, `eventData` (incluye `calendarId`),
+  `rescheduleEvent` (posponer/adelantar manteniendo duración) y
+  `moveEventToCalendar(uid, calendarId)`; todas localizan el calendario
+  contenedor buscando el UID. Cada evento soporta: resumen, descripción,
+  ubicación, inicio/fin, todo el día, color opcional por evento (custom
+  property `X-KDE-KWEEK-COLOR`, si está vacío se usa el color del
+  calendario), recurrencia simple (ninguna/diaria/semanal/mensual/anual),
+  recordatorio (alarma Display N minutos antes) y disponibilidad
   ocupado/libre (TRANSP).
 - `src/core/eventlistmodel.h/.cpp` — `EventListModel` (QAbstractListModel,
-  QML_ELEMENT): expande ocurrencias (incl. recurrentes) dentro de
-  `[rangeStart, rangeEnd)` usando `OccurrenceIterator`, ordenadas por inicio.
-  Roles: `uid`, `summary`, `description`, `location`, `start`, `end`,
-  `allDay`, `color`, `recurring`, `recurrence`, `reminderMinutes`, `busy`.
-- `src/qml/CalendarPage.qml` — página principal: cabecera con
+  QML_ELEMENT): expande ocurrencias (incl. recurrentes) de todos los
+  calendarios locales **visibles** dentro de `[rangeStart, rangeEnd)`
+  usando `OccurrenceIterator` por calendario, fusionadas y ordenadas por
+  inicio. Roles: `uid`, `summary`, `description`, `location`, `start`,
+  `end`, `allDay`, `color` (override del evento o color del calendario),
+  `recurring`, `recurrence`, `reminderMinutes`, `busy`, `calendarId`.
+- `src/qml/CalendarSidebar.qml` — panel lateral izquierdo con la lista de
+  calendarios (`CalendarManager.calendars`): checkbox de visibilidad,
+  círculo de color (clic abre selector de color con paleta de 8 colores),
+  campo de texto editable para renombrar, botón de borrar (oculto si solo
+  queda un calendario) y botón "Nuevo calendario".
+- `src/qml/CalendarPage.qml` — página principal: `CalendarSidebar` a la
+  izquierda + separador, y a la derecha cabecera con
   Hoy/Anterior/Siguiente/Nuevo evento, selector de vista (Agenda/Mes/Semana)
   y título dinámico (mes/año o rango de semana).
 - `src/qml/AgendaView.qml` — lista semanal de eventos (alta/edición/borrado,
@@ -56,7 +74,10 @@ Modelo de datos de eventos implementado sobre KCalendarCore:
   clic simple sigue abriendo el diálogo de edición.
 - `src/qml/EventEditDialog.qml` — diálogo de alta/edición compartido por las
   tres vistas (`CalendarManager.eventData(uid)` rellena el formulario al
-  editar).
+  editar). Incluye selector de calendario destino (`ComboBox` sobre
+  `CalendarManager.calendars`; al cambiarlo en edición llama a
+  `moveEventToCalendar`) y un checkbox "usar color del calendario" que, si
+  se desmarca, muestra la paleta de colores de override por evento.
 - `src/qml/DateUtils.js` — utilidades de fechas (semana empieza en lunes).
 
 Verificado: compila limpio y se ejecuta sin errores QML
@@ -231,8 +252,10 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 - [x] Drag & drop para mover/redimensionar eventos (vista de semana: arrastrar
       bloque para cambiar día/hora, asa inferior para redimensionar duración;
       vista de mes: arrastrar chip de evento a otro día)
-- [ ] Colores de calendario personalizables (por calendario, no solo por evento)
-- [ ] Múltiples calendarios locales (actualmente un único `.ics`)
+- [x] Colores de calendario personalizables (por calendario, con override
+      opcional por evento)
+- [x] Múltiples calendarios locales (panel lateral con alta/baja, color,
+      renombrado y visibilidad por calendario)
 
 ### Fase 2 — Sincronización en la nube
 - [ ] Soporte CalDAV genérico (incl. Apple/iCloud)
