@@ -1,3 +1,6 @@
 /build*/
 *.user
 .cache/
+
+# Contains the real Google OAuth client id/secret; see googleoauthconfig.h.example.
+/src/core/googleoauthconfig.h

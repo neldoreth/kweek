@@ -349,16 +349,85 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 - ¿AEMET además de Open-Meteo, o solo Open-Meteo para simplificar?
 - ¿Soporte de tareas/to-dos además de eventos (como BusyCal)?
 - Estrategia exacta de resolución de conflictos de sincronización.
-- **Integración Google Calendar (próxima tarea)**: requiere un OAuth client
-  ID/secret tipo "Desktop app" creado en Google Cloud Console (con
-  `Qt6::NetworkAuth` + `QOAuth2AuthorizationCodeFlow` con PKCE y un
-  `QOAuthHttpServerReplyHandler` local para el redirect). Pendiente decidir:
-  ¿implementar todo el flujo con un client_id/secret de ejemplo en un fichero
-  de config a rellenar más tarde, o esperar a que el usuario aporte
-  credenciales reales de un proyecto ya creado? Sin esto no se puede probar
-  el login real en este entorno. Arquitectura prevista: nuevo
-  `GoogleCalendarClient` (OAuth2 + llamadas a Calendar API v3: listar
-  calendarios, listar/insertar/actualizar/borrar eventos, sync incremental
-  vía `syncToken`), nuevo tipo de cuenta/calendario `"google"` en
-  `CalendarManager` análogo al `"caldav"` actual, refresh token guardado en
-  KWallet vía `CredentialStore` (o una extensión de la misma).
+- **Integración Google Calendar (en curso)**: el usuario ya ha aportado un
+  client ID/secret de OAuth2 "Desktop app" de un proyecto de Google Cloud
+  Console (con la Google Calendar API habilitada). Las credenciales reales
+  se guardan en `src/core/googleoauthconfig.h` (gitignored, **no se sube a
+  GitHub** por ser un repo público); hay un `src/core/googleoauthconfig.h.example`
+  committeado como plantilla con instrucciones. `Qt6NetworkAuth` (paquete
+  `qt6-networkauth`, ya instalado) está disponible y confirmado.
+
+  ### Arquitectura prevista (sin implementar todavía)
+  - Añadir `Qt6::NetworkAuth` a `find_package(Qt6 ...)` (root CMakeLists) y
+    `target_link_libraries` en `src/CMakeLists.txt`; añadir
+    `core/googlecalendarclient.cpp` a las fuentes.
+  - `src/core/googlecalendarclient.h/.cpp` — `GoogleCalendarClient`:
+    - `authenticate()`: usa `QOAuth2AuthorizationCodeFlow` (PKCE S256) +
+      `QOAuthHttpServerReplyHandler` (puerto local aleatorio) para el flujo
+      interactivo; `authorizeWithBrowser` -> `QDesktopServices::openUrl`;
+      `setModifyParametersFunction` añade `access_type=offline` y
+      `prompt=consent` en la etapa de autorización para garantizar
+      `refresh_token`. Scopes: `https://www.googleapis.com/auth/calendar` +
+      `email`. Al recibir `granted()`, obtiene el email del usuario
+      (`GET https://www.googleapis.com/oauth2/v3/userinfo`) y emite
+      `authenticated(refreshToken, email, error)`.
+    - Para llamadas API posteriores (sync), **no** reutiliza
+      `QOAuth2AuthorizationCodeFlow`: hace un `POST` manual a
+      `https://oauth2.googleapis.com/token` con
+      `grant_type=refresh_token` + `client_id`/`client_secret` para obtener
+      un access token fresco antes de cada operación (`withAccessToken`
+      helper).
+    - `listCalendars()`: `GET .../users/me/calendarList` ->
+      `calendarsListed(QList<CalendarInfo>{id, displayName, color, primary}, error)`.
+    - `fetchEvents(calendarId, syncToken)`: `GET .../calendars/{id}/events`
+      con `syncToken` (o sin él para sync inicial completo, `singleEvents=false`
+      para no expandir recurrencias) -> `eventsFetched(events, nextSyncToken,
+      syncTokenInvalid, error)`. `syncTokenInvalid` (HTTP 410) implica
+      borrar `syncToken`+`syncItems` locales y forzar resync completo.
+    - `putEvent(calendarId, googleEventId, json)`: `POST` (crear, id vacío) o
+      `PATCH` (actualizar) a `.../calendars/{id}/events[/{eventId}]` ->
+      `eventPut(eventId, etag, error)`.
+    - `deleteEvent(calendarId, googleEventId)`: `DELETE` ->
+      `eventDeleted(error)`.
+    - **Limitaciones v1** (igual que CalDAV): sin paginación (asume
+      `events.list` cabe en una página), instancias de excepción de eventos
+      recurrentes (`recurringEventId`/`originalStartTime`) se ignoran al
+      sincronizar, recurrencia simplificada a
+      ninguna/diaria/semanal/mensual/anual (mismo subconjunto que CalDAV).
+  - Mapeo JSON evento de Google <-> `KCalendarCore::Event`: funciones
+    `googleJsonToEvent()` / `eventToGoogleJson()` (campos: summary,
+    description, location, start/end con `date` para todo el día o
+    `dateTime`+`timeZone`, `transparency` opaque/transparent ->
+    busy/free, `recurrence: ["RRULE:FREQ=..."]` simple, `reminders.overrides`
+    -> alarma Display).
+  - `CredentialStore`: añadir `storeGoogleTokens`/`readGoogleTokens`/
+    `removeCredentials` (reutilizable) para guardar `{email, refreshToken}`
+    en KWallet por `accountId`, generalizando el wrapper de mapa actual.
+  - `CalendarManager`:
+    - `Account` gana campo `type` ("caldav"/"google"; los existentes sin
+      `type` en `accounts.json` se asumen "caldav" por compatibilidad).
+    - `LocalCalendar` gana `syncToken` (solo `type == "google"`, persistido
+      en `<id>.sync.json` junto a `items`); `remoteUrl` se reutiliza para
+      guardar el `calendarId` de Google; `syncItems[uid] = {googleEventId,
+      etag}` (para eventos creados localmente, tras el primer `push` se
+      renombra el UID local al id que asigna Google, borrando/reañadiendo
+      la incidencia).
+    - Refactor: extraer la lógica actual de `syncCalendar` para CalDAV a un
+      helper privado `syncCalDavCalendar(LocalCalendar&)`, y añadir
+      `syncGoogleCalendar(LocalCalendar&)`; `syncCalendar(id)` despacha según
+      `type`.
+    - Nuevo `Q_INVOKABLE void addGoogleAccount()` (sin parámetros, todo
+      interactivo vía navegador): autentica, guarda tokens, hace
+      `listCalendars`, crea un `LocalCalendar` tipo "google" por calendario
+      descubierto y lanza `syncCalendar` inicial. Señal
+      `googleAccountAdded(accountId, calendarCount, error)`.
+    - `pushEvent`/`pushDelete` ganan rama `type == "google"` usando
+      `GoogleCalendarClient::putEvent`/`deleteEvent`.
+  - QML: nuevo `src/qml/AddGoogleAccountDialog.qml` (botón "Sign in with
+    Google" + estado/progreso, análogo a `AddCalDavAccountDialog.qml` pero
+    sin campos de servidor/usuario/contraseña) y botón "Connect Google
+    account…" en `CalendarSidebar.qml`.
+  - Build + smoke test offscreen (no se puede probar el login real sin
+    interacción de navegador en este entorno, pero sí que compile y arranque
+    sin errores QML). Actualizar checklist Fase 2 en este documento al
+    terminar.

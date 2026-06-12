@@ -1,0 +1,12 @@
+#pragma once
+
+// Copy this file to googleoauthconfig.h (gitignored) and fill in the OAuth
+// client credentials for a "Desktop app" OAuth client created in the Google
+// Cloud Console (APIs & Services -> Credentials), with the Google Calendar
+// API enabled for the project.
+
+namespace GoogleOAuthConfig
+{
+constexpr auto kClientId = "YOUR_CLIENT_ID.apps.googleusercontent.com";
+constexpr auto kClientSecret = "YOUR_CLIENT_SECRET";
+}
