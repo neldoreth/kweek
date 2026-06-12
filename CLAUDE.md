@@ -25,14 +25,16 @@ ECM/KDE Frameworks 6.
 Modelo de datos de eventos implementado sobre KCalendarCore:
 
 - `src/core/calendarmanager.h/.cpp` — `CalendarManager` (singleton QML):
-  gestiona una lista de **calendarios locales** (`LocalCalendar`: id, nombre,
-  color, visible), cada uno con su propio `KCalendarCore::MemoryCalendar` +
-  `FileStorage`. Metadatos en `~/.local/share/Kweek/Kweek/calendars.json`;
-  `.ics` por calendario en `~/.local/share/Kweek/Kweek/calendar.ics`
-  (calendario "default"/"Personal", creado automáticamente la primera vez)
-  y `.../calendars/<id>.ics` para el resto. Propiedad `calendars` (lista de
-  mapas id/name/color/visible) y métodos `addCalendar`, `removeCalendar`
-  (no permite borrar el último), `updateCalendar` (nombre+color),
+  gestiona una lista de **calendarios** (`LocalCalendar`: id, nombre, color,
+  visible, `type` "local"/"caldav"), cada uno con su propio
+  `KCalendarCore::MemoryCalendar` + `FileStorage`. Metadatos en
+  `~/.local/share/Kweek/Kweek/calendars.json`; `.ics` por calendario en
+  `~/.local/share/Kweek/Kweek/calendar.ics` (calendario "default"/"Personal",
+  creado automáticamente la primera vez) y `.../calendars/<id>.ics` para el
+  resto. Propiedad `calendars` (lista de mapas id/name/color/visible/type/
+  accountId) y métodos `addCalendar`, `removeCalendar` (no permite borrar el
+  último; si es CalDAV y era el último calendario de su cuenta, borra también
+  la cuenta y sus credenciales), `updateCalendar` (nombre+color),
   `setCalendarVisible`. CRUD de eventos: `addEvent(calendarId, ...)`,
   `updateEvent`, `removeEvent`, `eventData` (incluye `calendarId`),
   `rescheduleEvent` (posponer/adelantar manteniendo duración) y
@@ -43,6 +45,49 @@ Modelo de datos de eventos implementado sobre KCalendarCore:
   calendario), recurrencia simple (ninguna/diaria/semanal/mensual/anual),
   recordatorio (alarma Display N minutos antes) y disponibilidad
   ocupado/libre (TRANSP).
+- **CalDAV genérico (iCloud, Nextcloud, Fastmail)**: `CalendarManager` puede
+  además gestionar **calendarios CalDAV** (`type: "caldav"`), persistidos
+  igual que los locales pero con `accountId` + `remoteUrl` adicionales y un
+  fichero de estado de sync `.../calendars/<id>.sync.json` (uid -> {href,
+  etag}). Cuentas en `~/.local/share/Kweek/Kweek/accounts.json` (id,
+  serverUrl, username — la contraseña/app-password se guarda en KWallet,
+  carpeta "Kweek", vía `src/core/credentialstore.h/.cpp`).
+  - `src/core/caldavclient.h/.cpp` — `CalDavClient`: cliente CalDAV genérico
+    sobre `QNetworkAccessManager` (auth Basic). `discoverCalendars()`
+    encadena PROPFIND `current-user-principal` -> PROPFIND
+    `calendar-home-set` -> PROPFIND Depth:1 de la colección home (filtra
+    `resourcetype` que no sea `calendar` o sea schedule-inbox/outbox),
+    extrayendo `displayname` y `calendar-color` (namespace Apple). El
+    parseo de respuestas multistatus usa `QXmlStreamReader`.
+    `fetchEvents()` hace REPORT `calendar-query` (filtro VEVENT) devolviendo
+    `{href, etag, calendar-data}` por evento. `putEvent()`/`deleteEvent()`
+    hacen PUT (con `If-Match` si hay etag, recurso `<uid>.ics`) y DELETE.
+  - `CalendarManager::addCalDavAccount(serverUrl, username, password)`:
+    descubre los calendarios, guarda credenciales en KWallet, crea un
+    `LocalCalendar` tipo "caldav" por cada calendario remoto descubierto y
+    lanza un `syncCalendar` inicial para cada uno. Emite
+    `calDavAccountAdded(accountId, calendarCount, error)`.
+  - `CalendarManager::syncCalendar(calendarId)` / `syncAll()`: pull vía
+    `fetchEvents`; por cada evento remoto compara `etag` con el guardado, si
+    cambió reemplaza el evento local (clon) y actualiza `syncItems`; los UID
+    conocidos que ya no aparecen en remoto se borran localmente. Emite
+    `syncStarted`/`syncFinished`/`syncError(calendarId, error)`. **Limitación
+    v1**: las excepciones de recurrencia (`RECURRENCE-ID`) del servidor se
+    ignoran al sincronizar.
+  - Push-on-edit: `addEvent`/`updateEvent`/`rescheduleEvent`/
+    `moveEventToCalendar` llaman a `pushEvent` (serializa con `ICalFormat` y
+    hace PUT, actualizando `syncItems`) y `removeEvent`/`moveEventToCalendar`
+    (en el calendario origen) llaman a `pushDelete` (DELETE remoto) para
+    calendarios tipo "caldav". Sincronización v1 = "last write wins", sin UI
+    de resolución de conflictos.
+  - `src/qml/AddCalDavAccountDialog.qml` — diálogo (Kirigami.Dialog) con
+    presets de proveedor (iCloud/Fastmail/Nextcloud/Custom), campos de
+    servidor/usuario/contraseña de aplicación, indicador de progreso y
+    mensaje de error/éxito (vía señal `calDavAccountAdded`).
+  - `src/qml/CalendarSidebar.qml` añade botón "Connect CalDAV account…" que
+    abre el diálogo anterior, y por cada calendario CalDAV un botón de
+    sincronización manual (`syncCalendar`) con indicador de progreso
+    (`syncStarted`/`syncFinished`/`syncError`).
 - `src/core/eventlistmodel.h/.cpp` — `EventListModel` (QAbstractListModel,
   QML_ELEMENT): expande ocurrencias (incl. recurrentes) de todos los
   calendarios locales **visibles** dentro de `[rangeStart, rangeEnd)`
@@ -96,13 +141,20 @@ inspeccionando el `.ics` resultante. No se pudo tomar captura visual en
 este entorno (la ventana no aparecía en `spectacle`), pendiente de
 verificación visual manual.
 
+CalDAV: build limpio con las nuevas dependencias (`Qt6::Network`,
+`KF6::Wallet`) y smoke test offscreen sin errores QML. No se ha podido probar
+una sincronización real contra iCloud/Nextcloud/Fastmail en este entorno (sin
+credenciales); pendiente de verificación manual con una cuenta real
+(descubrimiento de calendarios, pull/push de eventos, borrado de cuenta).
+
 Nota de CMake: fue necesario añadir `target_include_directories(kweek
 PRIVATE core)` para que la generación automática de `qmltyperegistrations`
 encuentre `calendarmanager.h`/`eventlistmodel.h` por nombre simple.
 
 Dependencias de desarrollo necesarias (Arch): `cmake`, `extra-cmake-modules`,
-`ninja` (o `make`), Qt6 (`qtbase`, `qtdeclarative`), `kirigami2`/`kirigami` (KF6),
-`kcoreaddons`, `ki18n`, `kcalendarcore`.
+`ninja` (o `make`), Qt6 (`qtbase`, `qtdeclarative`, `qtnetworkauth` no usado
+aún), `kirigami2`/`kirigami` (KF6), `kcoreaddons`, `ki18n`, `kcalendarcore`,
+`kwallet`.
 
 Este documento sirve como plan de referencia y hoja de ruta para retomar el
 trabajo entre sesiones.
@@ -268,11 +320,14 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
       renombrado y visibilidad por calendario)
 
 ### Fase 2 — Sincronización en la nube
-- [ ] Soporte CalDAV genérico (incl. Apple/iCloud)
+- [x] Soporte CalDAV genérico (incl. Apple/iCloud, Nextcloud, Fastmail) —
+      descubrimiento, pull y push de eventos; ver detalles arriba
 - [ ] Integración Google Calendar (OAuth2 + API)
 - [ ] Integración Microsoft Graph (personal + 365/trabajo)
-- [ ] Gestión de múltiples cuentas, KWallet
-- [ ] Sincronización bidireccional con resolución de conflictos
+- [x] Gestión de múltiples cuentas, KWallet (cuentas CalDAV; credenciales en
+      KWallet vía `CredentialStore`)
+- [ ] Sincronización bidireccional con resolución de conflictos (v1 = last
+      write wins; excepciones de recurrencia remotas no soportadas aún)
 
 ### Fase 3 — Extras
 - [ ] Widget de tiempo (Open-Meteo / AEMET, selección de ciudad)

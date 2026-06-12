@@ -1,16 +1,22 @@
 #include "calendarmanager.h"
 
+#include "caldavclient.h"
+#include "credentialstore.h"
+
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
 #include <QStandardPaths>
 #include <QTimeZone>
+#include <QUrl>
 
 #include <KCalendarCore/Alarm>
 #include <KCalendarCore/CalFormat>
 #include <KCalendarCore/Event>
+#include <KCalendarCore/ICalFormat>
 #include <KCalendarCore/Recurrence>
 #include <KCalendarCore/RecurrenceRule>
 #include <KLocalizedString>
@@ -23,6 +29,8 @@ constexpr auto kPropertyApp = "KWEEK";
 constexpr auto kColorProperty = "COLOR";
 constexpr auto kDefaultCalendarId = "default";
 constexpr auto kDefaultCalendarColor = "#7B61FF";
+constexpr auto kTypeLocal = "local";
+constexpr auto kTypeCalDav = "caldav";
 
 void applyRecurrence(const Event::Ptr &event, const QString &recurrence)
 {
@@ -85,12 +93,18 @@ void applyEventFields(const Event::Ptr &event,
 CalendarManager::CalendarManager(QObject *parent)
     : QObject(parent)
 {
+    loadAccounts();
     loadCalendars();
 }
 
 QString CalendarManager::calendarsMetaPath() const
 {
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/calendars.json");
+}
+
+QString CalendarManager::accountsMetaPath() const
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/accounts.json");
 }
 
 QString CalendarManager::icsPathFor(const QString &id) const
@@ -103,6 +117,83 @@ QString CalendarManager::icsPathFor(const QString &id) const
 
     QDir().mkpath(dataDir + QStringLiteral("/calendars"));
     return dataDir + QStringLiteral("/calendars/") + id + QStringLiteral(".ics");
+}
+
+QString CalendarManager::syncStatePath(const QString &id) const
+{
+    const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(dataDir + QStringLiteral("/calendars"));
+    return dataDir + QStringLiteral("/calendars/") + id + QStringLiteral(".sync.json");
+}
+
+void CalendarManager::loadSyncState(LocalCalendar &entry)
+{
+    QFile file(syncStatePath(entry.id));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return;
+    }
+
+    const QJsonObject obj = QJsonDocument::fromJson(file.readAll()).object();
+    const QJsonObject items = obj.value(QStringLiteral("items")).toObject();
+    for (auto it = items.constBegin(); it != items.constEnd(); ++it) {
+        const QJsonObject item = it.value().toObject();
+        entry.syncItems.insert(it.key(), qMakePair(item.value(QStringLiteral("href")).toString(),
+                                                     item.value(QStringLiteral("etag")).toString()));
+    }
+}
+
+void CalendarManager::saveSyncState(const LocalCalendar &entry)
+{
+    QJsonObject items;
+    for (auto it = entry.syncItems.constBegin(); it != entry.syncItems.constEnd(); ++it) {
+        items.insert(it.key(), QJsonObject{
+            {QStringLiteral("href"), it.value().first},
+            {QStringLiteral("etag"), it.value().second},
+        });
+    }
+
+    QJsonObject obj;
+    obj.insert(QStringLiteral("items"), items);
+
+    QFile file(syncStatePath(entry.id));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(QJsonDocument(obj).toJson());
+    }
+}
+
+void CalendarManager::loadAccounts()
+{
+    QFile file(accountsMetaPath());
+    if (!file.open(QIODevice::ReadOnly)) {
+        return;
+    }
+
+    const QJsonArray array = QJsonDocument::fromJson(file.readAll()).array();
+    for (const QJsonValue &value : array) {
+        const QJsonObject obj = value.toObject();
+        Account account;
+        account.id = obj.value(QStringLiteral("id")).toString();
+        account.serverUrl = obj.value(QStringLiteral("serverUrl")).toString();
+        account.username = obj.value(QStringLiteral("username")).toString();
+        m_accounts.append(account);
+    }
+}
+
+void CalendarManager::saveAccountsMeta()
+{
+    QJsonArray array;
+    for (const Account &account : m_accounts) {
+        array.append(QJsonObject{
+            {QStringLiteral("id"), account.id},
+            {QStringLiteral("serverUrl"), account.serverUrl},
+            {QStringLiteral("username"), account.username},
+        });
+    }
+
+    QFile file(accountsMetaPath());
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(QJsonDocument(array).toJson());
+    }
 }
 
 void CalendarManager::loadCalendars()
@@ -134,9 +225,16 @@ void CalendarManager::loadCalendars()
         entry.name = obj.value(QStringLiteral("name")).toString();
         entry.color = obj.value(QStringLiteral("color")).toString();
         entry.visible = obj.value(QStringLiteral("visible")).toBool(true);
+        entry.type = obj.value(QStringLiteral("type")).toString(QString::fromLatin1(kTypeLocal));
+        entry.accountId = obj.value(QStringLiteral("accountId")).toString();
+        entry.remoteUrl = obj.value(QStringLiteral("remoteUrl")).toString();
         entry.calendar = MemoryCalendar::Ptr(new MemoryCalendar(QTimeZone::systemTimeZone()));
         entry.storage = FileStorage::Ptr(new FileStorage(entry.calendar, icsPathFor(entry.id)));
         entry.storage->load();
+
+        if (entry.type == QLatin1String(kTypeCalDav)) {
+            loadSyncState(entry);
+        }
 
         m_calendars.append(entry);
     }
@@ -148,12 +246,18 @@ void CalendarManager::saveCalendarsMeta()
 {
     QJsonArray array;
     for (const LocalCalendar &entry : m_calendars) {
-        array.append(QJsonObject{
+        QJsonObject obj{
             {QStringLiteral("id"), entry.id},
             {QStringLiteral("name"), entry.name},
             {QStringLiteral("color"), entry.color},
             {QStringLiteral("visible"), entry.visible},
-        });
+            {QStringLiteral("type"), entry.type},
+        };
+        if (entry.type == QLatin1String(kTypeCalDav)) {
+            obj.insert(QStringLiteral("accountId"), entry.accountId);
+            obj.insert(QStringLiteral("remoteUrl"), entry.remoteUrl);
+        }
+        array.append(obj);
     }
 
     QFile metaFile(calendarsMetaPath());
@@ -176,6 +280,8 @@ QVariantList CalendarManager::calendars() const
             {QStringLiteral("name"), entry.name},
             {QStringLiteral("color"), entry.color},
             {QStringLiteral("visible"), entry.visible},
+            {QStringLiteral("type"), entry.type},
+            {QStringLiteral("accountId"), entry.accountId},
         });
     }
     return list;
@@ -215,6 +321,80 @@ CalendarManager::LocalCalendar *CalendarManager::findCalendarForEvent(const QStr
     return nullptr;
 }
 
+void CalendarManager::pushEvent(LocalCalendar &entry, const Event::Ptr &event)
+{
+    if (entry.type != QLatin1String(kTypeCalDav)) {
+        return;
+    }
+
+    QString username;
+    QString password;
+    if (!CredentialStore::readCredentials(entry.accountId, username, password)) {
+        Q_EMIT syncError(entry.id, i18nc("@info", "No stored credentials for this account."));
+        return;
+    }
+
+    ICalFormat format;
+    const QByteArray ics = format.toICalString(event).toUtf8();
+
+    QString etag;
+    const auto it = entry.syncItems.constFind(event->uid());
+    if (it != entry.syncItems.constEnd()) {
+        etag = it.value().second;
+    }
+
+    auto *client = new CalDavClient(this);
+    const QString calendarId = entry.id;
+    const QString uid = event->uid();
+    const QUrl remoteUrl(entry.remoteUrl);
+
+    connect(client, &CalDavClient::eventPut, this, [this, client, calendarId, uid](const QString &href, const QString &newEtag, const QString &error) {
+        client->deleteLater();
+
+        if (!error.isEmpty()) {
+            Q_EMIT syncError(calendarId, error);
+            return;
+        }
+
+        LocalCalendar *target = findCalendarById(calendarId);
+        if (!target) {
+            return;
+        }
+
+        target->syncItems.insert(uid, qMakePair(href, newEtag));
+        saveSyncState(*target);
+    });
+
+    client->putEvent(remoteUrl, uid, ics, etag, username, password);
+}
+
+void CalendarManager::pushDelete(LocalCalendar &entry, const QString &uid)
+{
+    if (entry.type != QLatin1String(kTypeCalDav)) {
+        return;
+    }
+
+    const auto it = entry.syncItems.constFind(uid);
+    if (it == entry.syncItems.constEnd()) {
+        return;
+    }
+
+    QString username;
+    QString password;
+    if (!CredentialStore::readCredentials(entry.accountId, username, password)) {
+        return;
+    }
+
+    const QString href = it.value().first;
+    const QString etag = it.value().second;
+    entry.syncItems.remove(uid);
+    saveSyncState(entry);
+
+    auto *client = new CalDavClient(this);
+    connect(client, &CalDavClient::eventDeleted, client, &QObject::deleteLater);
+    client->deleteEvent(QUrl(href), etag, username, password);
+}
+
 QString CalendarManager::addCalendar(const QString &name, const QString &color)
 {
     LocalCalendar entry;
@@ -242,9 +422,35 @@ bool CalendarManager::removeCalendar(const QString &calendarId)
 
     for (int i = 0; i < m_calendars.size(); ++i) {
         if (m_calendars.at(i).id == calendarId) {
+            const LocalCalendar removed = m_calendars.at(i);
+
             QFile::remove(icsPathFor(calendarId));
+            if (removed.type == QLatin1String(kTypeCalDav)) {
+                QFile::remove(syncStatePath(calendarId));
+            }
             m_calendars.removeAt(i);
             saveCalendarsMeta();
+
+            // If this was the last calendar for its CalDAV account, drop the account too.
+            if (removed.type == QLatin1String(kTypeCalDav)) {
+                bool accountStillUsed = false;
+                for (const LocalCalendar &other : m_calendars) {
+                    if (other.accountId == removed.accountId) {
+                        accountStillUsed = true;
+                        break;
+                    }
+                }
+                if (!accountStillUsed) {
+                    CredentialStore::removeCredentials(removed.accountId);
+                    for (int a = 0; a < m_accounts.size(); ++a) {
+                        if (m_accounts.at(a).id == removed.accountId) {
+                            m_accounts.removeAt(a);
+                            break;
+                        }
+                    }
+                    saveAccountsMeta();
+                }
+            }
 
             Q_EMIT calendarsChanged();
             Q_EMIT calendarChanged();
@@ -285,6 +491,175 @@ bool CalendarManager::setCalendarVisible(const QString &calendarId, bool visible
     return true;
 }
 
+void CalendarManager::addCalDavAccount(const QString &serverUrl, const QString &username, const QString &password)
+{
+    QUrl url(serverUrl.trimmed());
+    if (url.scheme().isEmpty()) {
+        url.setScheme(QStringLiteral("https"));
+    }
+
+    if (!url.isValid() || url.host().isEmpty()) {
+        Q_EMIT calDavAccountAdded(QString(), 0, i18nc("@info", "Invalid server URL."));
+        return;
+    }
+
+    auto *client = new CalDavClient(this);
+    connect(client, &CalDavClient::discoveryFinished, this,
+            [this, client, url, username, password](const QList<CalDavClient::CalendarInfo> &discovered, const QString &error) {
+                client->deleteLater();
+
+                if (!error.isEmpty()) {
+                    Q_EMIT calDavAccountAdded(QString(), 0, error);
+                    return;
+                }
+                if (discovered.isEmpty()) {
+                    Q_EMIT calDavAccountAdded(QString(), 0, i18nc("@info", "No calendars were found on this server."));
+                    return;
+                }
+
+                const QString accountId = CalFormat::createUniqueId();
+                if (!CredentialStore::storeCredentials(accountId, username, password)) {
+                    Q_EMIT calDavAccountAdded(QString(), 0, i18nc("@info", "Could not save credentials to KWallet."));
+                    return;
+                }
+
+                Account account;
+                account.id = accountId;
+                account.serverUrl = url.toString();
+                account.username = username;
+                m_accounts.append(account);
+                saveAccountsMeta();
+
+                QStringList newCalendarIds;
+                for (const CalDavClient::CalendarInfo &info : discovered) {
+                    LocalCalendar entry;
+                    entry.id = CalFormat::createUniqueId();
+                    entry.name = info.displayName;
+                    entry.color = info.color.size() >= 7 ? info.color.left(7) : QString::fromLatin1(kDefaultCalendarColor);
+                    entry.visible = true;
+                    entry.type = QString::fromLatin1(kTypeCalDav);
+                    entry.accountId = accountId;
+                    entry.remoteUrl = info.url;
+                    entry.calendar = MemoryCalendar::Ptr(new MemoryCalendar(QTimeZone::systemTimeZone()));
+                    entry.storage = FileStorage::Ptr(new FileStorage(entry.calendar, icsPathFor(entry.id)));
+                    entry.storage->load();
+
+                    m_calendars.append(entry);
+                    newCalendarIds.append(entry.id);
+                }
+                saveCalendarsMeta();
+
+                Q_EMIT calendarsChanged();
+                Q_EMIT calendarChanged();
+                Q_EMIT calDavAccountAdded(accountId, newCalendarIds.size(), QString());
+
+                for (const QString &id : newCalendarIds) {
+                    syncCalendar(id);
+                }
+            });
+
+    client->discoverCalendars(url, username, password);
+}
+
+void CalendarManager::syncCalendar(const QString &calendarId)
+{
+    LocalCalendar *entry = findCalendarById(calendarId);
+    if (!entry || entry->type != QLatin1String(kTypeCalDav)) {
+        return;
+    }
+
+    QString username;
+    QString password;
+    if (!CredentialStore::readCredentials(entry->accountId, username, password)) {
+        Q_EMIT syncError(calendarId, i18nc("@info", "No stored credentials for this account."));
+        return;
+    }
+
+    Q_EMIT syncStarted(calendarId);
+
+    auto *client = new CalDavClient(this);
+    connect(client, &CalDavClient::eventsFetched, this, [this, client, calendarId](const QList<CalDavClient::RemoteEvent> &events, const QString &error) {
+        client->deleteLater();
+
+        LocalCalendar *target = findCalendarById(calendarId);
+        if (!target) {
+            return;
+        }
+
+        if (!error.isEmpty()) {
+            Q_EMIT syncError(calendarId, error);
+            return;
+        }
+
+        ICalFormat format;
+        QSet<QString> remoteUids;
+
+        for (const CalDavClient::RemoteEvent &remote : events) {
+            MemoryCalendar::Ptr temp(new MemoryCalendar(QTimeZone::systemTimeZone()));
+            if (!format.fromRawString(temp, remote.data.toUtf8())) {
+                continue;
+            }
+
+            for (const Incidence::Ptr &incidence : temp->incidences()) {
+                // Recurring-event exceptions are not yet handled by sync (v1 limitation).
+                if (incidence->hasRecurrenceId()) {
+                    continue;
+                }
+
+                const Event::Ptr event = incidence.dynamicCast<Event>();
+                if (!event) {
+                    continue;
+                }
+
+                const QString uid = event->uid();
+                remoteUids.insert(uid);
+
+                const auto syncIt = target->syncItems.constFind(uid);
+                if (syncIt != target->syncItems.constEnd() && syncIt.value().second == remote.etag) {
+                    continue;
+                }
+
+                const Event::Ptr existing = target->calendar->event(uid);
+                if (existing) {
+                    target->calendar->deleteEvent(existing);
+                }
+                target->calendar->addEvent(Event::Ptr(event->clone()));
+                target->syncItems.insert(uid, qMakePair(remote.href, remote.etag));
+            }
+        }
+
+        // Events that disappeared from the server are removed locally too.
+        const QStringList knownUids = target->syncItems.keys();
+        for (const QString &uid : knownUids) {
+            if (remoteUids.contains(uid)) {
+                continue;
+            }
+            const Event::Ptr existing = target->calendar->event(uid);
+            if (existing) {
+                target->calendar->deleteEvent(existing);
+            }
+            target->syncItems.remove(uid);
+        }
+
+        target->storage->save();
+        saveSyncState(*target);
+
+        Q_EMIT calendarChanged();
+        Q_EMIT syncFinished(calendarId);
+    });
+
+    client->fetchEvents(QUrl(entry->remoteUrl), username, password);
+}
+
+void CalendarManager::syncAll()
+{
+    for (const LocalCalendar &entry : m_calendars) {
+        if (entry.type == QLatin1String(kTypeCalDav)) {
+            syncCalendar(entry.id);
+        }
+    }
+}
+
 QString CalendarManager::addEvent(const QString &calendarId,
                                    const QString &summary,
                                    const QString &description,
@@ -314,6 +689,8 @@ QString CalendarManager::addEvent(const QString &calendarId,
     entry->storage->save();
     Q_EMIT calendarChanged();
 
+    pushEvent(*entry, event);
+
     return event->uid();
 }
 
@@ -339,6 +716,9 @@ bool CalendarManager::updateEvent(const QString &uid,
 
     entry->storage->save();
     Q_EMIT calendarChanged();
+
+    pushEvent(*entry, event);
+
     return true;
 }
 
@@ -353,6 +733,9 @@ bool CalendarManager::removeEvent(const QString &uid)
     entry->calendar->deleteEvent(event);
     entry->storage->save();
     Q_EMIT calendarChanged();
+
+    pushDelete(*entry, uid);
+
     return true;
 }
 
@@ -424,6 +807,9 @@ bool CalendarManager::rescheduleEvent(const QString &uid, qint64 secondsDelta)
 
     entry->storage->save();
     Q_EMIT calendarChanged();
+
+    pushEvent(*entry, event);
+
     return true;
 }
 
@@ -444,6 +830,8 @@ bool CalendarManager::moveEventToCalendar(const QString &uid, const QString &cal
         return false;
     }
 
+    pushDelete(*source, uid);
+
     const Event::Ptr clone(event->clone());
     source->calendar->deleteEvent(event);
     target->calendar->addEvent(clone);
@@ -451,5 +839,8 @@ bool CalendarManager::moveEventToCalendar(const QString &uid, const QString &cal
     source->storage->save();
     target->storage->save();
     Q_EMIT calendarChanged();
+
+    pushEvent(*target, clone);
+
     return true;
 }

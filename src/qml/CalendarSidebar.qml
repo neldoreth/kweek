@@ -10,6 +10,28 @@ ColumnLayout {
 
     readonly property var colors: ["#7B61FF", "#FF7A59", "#36CFC9", "#F2C94C", "#6FCF97", "#EB5757", "#9B51E0", "#56CCF2"]
 
+    property var syncingIds: ({})
+
+    Connections {
+        target: CalendarManager
+        function onSyncStarted(calendarId) {
+            const syncing = Object.assign({}, root.syncingIds);
+            syncing[calendarId] = true;
+            root.syncingIds = syncing;
+        }
+        function onSyncFinished(calendarId) {
+            const syncing = Object.assign({}, root.syncingIds);
+            delete syncing[calendarId];
+            root.syncingIds = syncing;
+        }
+        function onSyncError(calendarId, error) {
+            const syncing = Object.assign({}, root.syncingIds);
+            delete syncing[calendarId];
+            root.syncingIds = syncing;
+            console.warn("CalDAV sync error:", calendarId, error);
+        }
+    }
+
     spacing: Kirigami.Units.smallSpacing
 
     Controls.Label {
@@ -59,6 +81,18 @@ ColumnLayout {
                 }
             }
 
+            Controls.BusyIndicator {
+                visible: modelData.type === "caldav" && root.syncingIds[modelData.id]
+                implicitWidth: Kirigami.Units.iconSizes.small
+                implicitHeight: Kirigami.Units.iconSizes.small
+            }
+
+            Controls.ToolButton {
+                icon.name: "view-refresh"
+                visible: modelData.type === "caldav" && !root.syncingIds[modelData.id]
+                onClicked: CalendarManager.syncCalendar(modelData.id)
+            }
+
             Controls.ToolButton {
                 icon.name: "edit-delete-remove"
                 visible: CalendarManager.calendars.length > 1
@@ -76,6 +110,18 @@ ColumnLayout {
             const colorIndex = CalendarManager.calendars.length % root.colors.length;
             CalendarManager.addCalendar(i18nc("@item new calendar default name", "New calendar"), root.colors[colorIndex]);
         }
+    }
+
+    Controls.Button {
+        Layout.fillWidth: true
+        Layout.margins: Kirigami.Units.smallSpacing
+        icon.name: "cloud-upload"
+        text: i18nc("@action:button", "Connect CalDAV account…")
+        onClicked: addAccountDialog.open2()
+    }
+
+    AddCalDavAccountDialog {
+        id: addAccountDialog
     }
 
     Item { Layout.fillHeight: true }
