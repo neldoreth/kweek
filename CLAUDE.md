@@ -19,14 +19,40 @@ y proveedores de calendario con métodos de login modernos (OAuth).
 
 ## Estado actual
 
-Esqueleto inicial creado y compilando: app Qt6/Kirigami mínima
-(`src/main.cpp`, `src/qml/Main.qml`) con CMake + ECM/KDE Frameworks 6.
-Compilación verificada con `cmake -B build -G Ninja && cmake --build build`
-y ejecución (`./build/bin/kweek`) sin errores.
+Esqueleto inicial creado y compilando: app Qt6/Kirigami mínima con CMake +
+ECM/KDE Frameworks 6.
+
+Modelo de datos de eventos implementado sobre KCalendarCore:
+
+- `src/core/calendarmanager.h/.cpp` — `CalendarManager` (singleton QML):
+  envuelve un `KCalendarCore::MemoryCalendar` persistido en
+  `~/.local/share/Kweek/Kweek/calendar.ics` (vía `FileStorage`). Expone
+  `addEvent`, `updateEvent`, `removeEvent` y `rescheduleEvent` (posponer/
+  adelantar manteniendo duración) a QML. Cada evento soporta: resumen,
+  descripción, ubicación, inicio/fin, todo el día, color (custom property
+  `X-KDE-KWEEK-COLOR`), recurrencia simple (ninguna/diaria/semanal/mensual/
+  anual), recordatorio (alarma Display N minutos antes) y disponibilidad
+  ocupado/libre (TRANSP).
+- `src/core/eventlistmodel.h/.cpp` — `EventListModel` (QAbstractListModel,
+  QML_ELEMENT): expande ocurrencias (incl. recurrentes) dentro de
+  `[rangeStart, rangeEnd)` usando `OccurrenceIterator`, ordenadas por inicio.
+  Roles: `uid`, `summary`, `description`, `location`, `start`, `end`,
+  `allDay`, `color`, `recurring`, `recurrence`, `reminderMinutes`, `busy`.
+- `src/qml/CalendarPage.qml` + `src/qml/EventEditDialog.qml` — vista de
+  agenda semanal mínima para probar el modelo: alta/edición/borrado y
+  acciones rápidas de posponer +1h/+1día por evento.
+
+Verificado: compila limpio y se ejecuta sin errores QML
+(`cmake -B build -G Ninja && cmake --build build`); probado end-to-end
+(add/reschedule/update) inspeccionando el `.ics` resultante.
+
+Nota de CMake: fue necesario añadir `target_include_directories(kweek
+PRIVATE core)` para que la generación automática de `qmltyperegistrations`
+encuentre `calendarmanager.h`/`eventlistmodel.h` por nombre simple.
 
 Dependencias de desarrollo necesarias (Arch): `cmake`, `extra-cmake-modules`,
 `ninja` (o `make`), Qt6 (`qtbase`, `qtdeclarative`), `kirigami2`/`kirigami` (KF6),
-`kcoreaddons`, `ki18n`.
+`kcoreaddons`, `ki18n`, `kcalendarcore`.
 
 Este documento sirve como plan de referencia y hoja de ruta para retomar el
 trabajo entre sesiones.
@@ -173,13 +199,15 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 - [ ] Esqueleto de manifest Flatpak
 
 ### Fase 1 — Núcleo local
-- [ ] Modelo de datos de eventos (KCalendarCore) + caché SQLite
-- [ ] Vistas: mes, semana, día, agenda/lista
-- [ ] Crear/editar/eliminar eventos (calendario local)
-- [ ] Recurrencias (RRULE)
+- [x] Modelo de datos de eventos (KCalendarCore), CRUD y reschedule
+- [x] Crear/editar/eliminar eventos (calendario local)
+- [x] Recurrencias básicas (diaria/semanal/mensual/anual vía RRULE)
+- [x] Acciones de posponer/adelantar (reschedule manteniendo duración)
+- [x] Vista de agenda mínima de prueba (lista semanal)
+- [ ] Vistas: mes, semana, día (calendario visual completo)
 - [ ] Drag & drop para mover/redimensionar eventos
-- [ ] Acciones de posponer/adelantar
-- [ ] Colores de calendario personalizables
+- [ ] Colores de calendario personalizables (por calendario, no solo por evento)
+- [ ] Múltiples calendarios locales (actualmente un único `.ics`)
 
 ### Fase 2 — Sincronización en la nube
 - [ ] Soporte CalDAV genérico (incl. Apple/iCloud)

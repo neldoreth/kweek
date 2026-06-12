@@ -1,5 +1,7 @@
 qt_add_executable(kweek
     main.cpp
+    core/calendarmanager.cpp
+    core/eventlistmodel.cpp
 )
 
 qt_add_qml_module(kweek
@@ -7,13 +9,18 @@ qt_add_qml_module(kweek
     VERSION 1.0
     QML_FILES
         qml/Main.qml
+        qml/CalendarPage.qml
+        qml/EventEditDialog.qml
 )
+
+target_include_directories(kweek PRIVATE core)
 
 target_link_libraries(kweek PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
     KF6::CoreAddons
     KF6::I18n
+    KF6::CalendarCore
 )
 
 install(TARGETS kweek ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})
