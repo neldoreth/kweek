@@ -1,4 +1,9 @@
-# Kalendarios — Cliente de calendario moderno para KDE
+# Kweek — Cliente de calendario moderno para KDE
+
+> Nombre de la app: **Kweek**. App ID provisional: `io.github.neldoreth.Kweek`
+> (a confirmar cuando se cree el repositorio en GitHub).
+> Icono inicial en `icons/io.github.neldoreth.Kweek.svg` (página de calendario
+> con fila de puntos de "semana" destacando el día actual).
 
 ## Visión del proyecto
 
@@ -130,14 +135,12 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 
 ## Identidad visual / Icono de la app
 
-- Necesita un **icono de aplicación moderno**, siguiendo las guías de
-  iconografía de KDE (Breeze) pero con personalidad propia (estilo
-  BusyCal/Fantastical: ilustración limpia, gradientes suaves, posible
-  referencia a fecha/página de calendario).
-- Formato SVG escalable, variantes para distintos tamaños/temas
-  (claro/oscuro), siguiendo el estándar `org.kde.<nombre>` para Flatpak.
-- Tarea pendiente: definir nombre final de la app (afecta al app ID del
-  Flatpak, ej. `org.kde.<nombre>`) y diseñar el icono.
+- Icono inicial creado: `icons/io.github.neldoreth.Kweek.svg`. Página de
+  calendario con anillos de carpeta, banda superior naranja, fila de puntos
+  representando la semana (destacando el día actual) y número de día grande,
+  sobre fondo degradado morado→turquesa.
+- Pendiente: generar variantes para distintos tamaños/temas (claro/oscuro) y
+  ajustar si es necesario una vez integrado en la app/Flatpak.
 
 ---
 
@@ -154,8 +157,8 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 ## Hoja de ruta
 
 ### Fase 0 — Fundamentos (en curso)
-- [ ] Decidir nombre definitivo de la app y app ID
-- [ ] Diseñar icono moderno (SVG, claro/oscuro)
+- [x] Decidir nombre definitivo de la app y app ID (Kweek / io.github.neldoreth.Kweek)
+- [x] Diseñar icono moderno (SVG inicial en `icons/`)
 - [ ] Estructura inicial del proyecto (CMake, Kirigami app skeleton)
 - [ ] Repositorio git + GitHub remoto
 - [ ] Esqueleto de manifest Flatpak
