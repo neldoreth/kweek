@@ -11,9 +11,11 @@ Kirigami.Page {
 
     title: viewSwitcher.currentIndex === 1
         ? Qt.formatDate(anchorDate, "MMMM yyyy")
-        : i18nc("@title:window week range", "%1 – %2",
-                Qt.formatDate(DateUtils.startOfWeek(anchorDate), "d MMM"),
-                Qt.formatDate(DateUtils.addDays(DateUtils.startOfWeek(anchorDate), 6), "d MMM yyyy"))
+        : viewSwitcher.currentIndex === 3
+            ? Qt.formatDate(anchorDate, "dddd, d MMMM yyyy")
+            : i18nc("@title:window week range", "%1 – %2",
+                    Qt.formatDate(DateUtils.startOfWeek(anchorDate), "d MMM"),
+                    Qt.formatDate(DateUtils.addDays(DateUtils.startOfWeek(anchorDate), 6), "d MMM yyyy"))
 
     property date anchorDate: new Date()
 
@@ -31,6 +33,8 @@ Kirigami.Page {
             onTriggered: {
                 if (viewSwitcher.currentIndex === 1) {
                     root.anchorDate = DateUtils.addMonths(root.anchorDate, -1);
+                } else if (viewSwitcher.currentIndex === 3) {
+                    root.anchorDate = DateUtils.addDays(root.anchorDate, -1);
                 } else {
                     root.anchorDate = DateUtils.addDays(root.anchorDate, -7);
                 }
@@ -42,6 +46,8 @@ Kirigami.Page {
             onTriggered: {
                 if (viewSwitcher.currentIndex === 1) {
                     root.anchorDate = DateUtils.addMonths(root.anchorDate, 1);
+                } else if (viewSwitcher.currentIndex === 3) {
+                    root.anchorDate = DateUtils.addDays(root.anchorDate, 1);
                 } else {
                     root.anchorDate = DateUtils.addDays(root.anchorDate, 7);
                 }
@@ -106,6 +112,9 @@ Kirigami.Page {
             Controls.TabButton {
                 text: i18nc("@item:inlistbox calendar view", "Week")
             }
+            Controls.TabButton {
+                text: i18nc("@item:inlistbox calendar view", "Day")
+            }
         }
 
         StackLayout {
@@ -123,7 +132,7 @@ Kirigami.Page {
                 onEventActivated: uid => editDialog.openForEditUid(uid)
                 onDayActivated: day => {
                     root.anchorDate = day;
-                    viewSwitcher.currentIndex = 2;
+                    viewSwitcher.currentIndex = 3;
                 }
                 onNewEventRequested: (start, end) => editDialog.openForCreate(start, end)
             }
@@ -133,7 +142,14 @@ Kirigami.Page {
                 onEventActivated: uid => editDialog.openForEditUid(uid)
                 onDayActivated: day => {
                     root.anchorDate = day;
+                    viewSwitcher.currentIndex = 3;
                 }
+                onNewEventRequested: (start, end) => editDialog.openForCreate(start, end)
+            }
+
+            DayView {
+                anchorDate: root.anchorDate
+                onEventActivated: uid => editDialog.openForEditUid(uid)
                 onNewEventRequested: (start, end) => editDialog.openForCreate(start, end)
             }
         }

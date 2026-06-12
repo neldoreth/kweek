@@ -15,6 +15,7 @@ qt_add_qml_module(kweek
         qml/AgendaView.qml
         qml/MonthView.qml
         qml/WeekView.qml
+        qml/DayView.qml
         qml/DateUtils.js
 )
 

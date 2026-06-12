@@ -57,8 +57,11 @@ Modelo de datos de eventos implementado sobre KCalendarCore:
   queda un calendario) y botón "Nuevo calendario".
 - `src/qml/CalendarPage.qml` — página principal: `CalendarSidebar` a la
   izquierda + separador, y a la derecha cabecera con
-  Hoy/Anterior/Siguiente/Nuevo evento, selector de vista (Agenda/Mes/Semana)
-  y título dinámico (mes/año o rango de semana).
+  Hoy/Anterior/Siguiente/Nuevo evento (Anterior/Siguiente avanzan por mes,
+  semana o día según la vista activa), selector de vista
+  (Agenda/Mes/Semana/Día) y título dinámico (mes/año, rango de semana o
+  fecha completa). Doble clic en un día de la vista mes, o clic en la
+  cabecera de un día en la vista semana, abre la vista de día de ese día.
 - `src/qml/AgendaView.qml` — lista semanal de eventos (alta/edición/borrado,
   posponer +1h/+1día).
 - `src/qml/MonthView.qml` — cuadrícula mensual (6x7), chips de eventos por
@@ -72,6 +75,12 @@ Modelo de datos de eventos implementado sobre KCalendarCore:
   arrastrar (mover día/hora, snap a 15 min, `rescheduleEvent`) o redimensionar
   desde su borde inferior (cambia solo la hora de fin, `updateEvent`); un
   clic simple sigue abriendo el diálogo de edición.
+- `src/qml/DayView.qml` — vista de día: cabecera con el día completo
+  (`dddd, d MMMM yyyy`), fila de eventos de todo el día, y rejilla horaria
+  de 24h de una sola columna con la misma interacción que la vista de
+  semana (arrastrar para retemporizar con snap a 15 min vía
+  `rescheduleEvent`, asa inferior para redimensionar vía `updateEvent`,
+  línea de "ahora" si es hoy).
 - `src/qml/EventEditDialog.qml` — diálogo de alta/edición compartido por las
   tres vistas (`CalendarManager.eventData(uid)` rellena el formulario al
   editar). Incluye selector de calendario destino (`ComboBox` sobre
@@ -248,7 +257,8 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 - [x] Vista de mes (cuadrícula 6x7 con chips de eventos, +N more)
 - [x] Vista de semana (rejilla horaria 24h, eventos todo el día separados,
       indicador de "ahora")
-- [ ] Vista de día
+- [x] Vista de día (rejilla horaria 24h, drag & drop para mover/redimensionar
+      igual que la vista de semana)
 - [x] Drag & drop para mover/redimensionar eventos (vista de semana: arrastrar
       bloque para cambiar día/hora, asa inferior para redimensionar duración;
       vista de mes: arrastrar chip de evento a otro día)
