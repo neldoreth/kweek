@@ -169,7 +169,7 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 - [x] Decidir nombre definitivo de la app y app ID (Kweek / io.github.neldoreth.Kweek)
 - [x] Diseñar icono moderno (SVG inicial en `icons/`)
 - [x] Estructura inicial del proyecto (CMake, Kirigami app skeleton) — compila y ejecuta
-- [ ] Repositorio git + GitHub remoto
+- [x] Repositorio git + GitHub remoto (https://github.com/neldoreth/kweek)
 - [ ] Esqueleto de manifest Flatpak
 
 ### Fase 1 — Núcleo local
