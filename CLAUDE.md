@@ -19,8 +19,17 @@ y proveedores de calendario con métodos de login modernos (OAuth).
 
 ## Estado actual
 
-Proyecto recién iniciado. Sin código todavía. Este documento sirve como
-plan de referencia y hoja de ruta para retomar el trabajo entre sesiones.
+Esqueleto inicial creado y compilando: app Qt6/Kirigami mínima
+(`src/main.cpp`, `src/qml/Main.qml`) con CMake + ECM/KDE Frameworks 6.
+Compilación verificada con `cmake -B build -G Ninja && cmake --build build`
+y ejecución (`./build/bin/kweek`) sin errores.
+
+Dependencias de desarrollo necesarias (Arch): `cmake`, `extra-cmake-modules`,
+`ninja` (o `make`), Qt6 (`qtbase`, `qtdeclarative`), `kirigami2`/`kirigami` (KF6),
+`kcoreaddons`, `ki18n`.
+
+Este documento sirve como plan de referencia y hoja de ruta para retomar el
+trabajo entre sesiones.
 
 ---
 
@@ -159,7 +168,7 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 ### Fase 0 — Fundamentos (en curso)
 - [x] Decidir nombre definitivo de la app y app ID (Kweek / io.github.neldoreth.Kweek)
 - [x] Diseñar icono moderno (SVG inicial en `icons/`)
-- [ ] Estructura inicial del proyecto (CMake, Kirigami app skeleton)
+- [x] Estructura inicial del proyecto (CMake, Kirigami app skeleton) — compila y ejecuta
 - [ ] Repositorio git + GitHub remoto
 - [ ] Esqueleto de manifest Flatpak
 

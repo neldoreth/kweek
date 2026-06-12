@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.neldoreth.Kweek</id>
+
+  <name>Kweek</name>
+  <summary>A modern, KDE-integrated calendar</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <description>
+    <p>
+      Kweek is a modern calendar application for KDE Plasma, inspired by
+      BusyCal and Fantastical. It supports multiple calendars and accounts,
+      including Google, Microsoft 365 and Apple/CalDAV calendars, with
+      drag-and-drop event editing, customizable calendar colors and an
+      optional weather indicator.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.neldoreth.Kweek.desktop</launchable>
+
+  <url type="homepage">https://github.com/neldoreth/kweek</url>
+
+  <provides>
+    <binary>kweek</binary>
+  </provides>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-06-12">
+      <description>
+        <p>Initial project scaffold.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Kweek
+GenericName=Calendar
+Comment=A modern, KDE-integrated calendar
+Exec=kweek
+Icon=io.github.neldoreth.Kweek
+Categories=Office;Calendar;Qt;KDE;
+X-KDE-StartupNotify=true
+Terminal=false
