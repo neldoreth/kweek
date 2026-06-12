@@ -164,6 +164,21 @@ QHash<int, QByteArray> EventListModel::roleNames() const
     };
 }
 
+QVariantMap EventListModel::get(int row) const
+{
+    QVariantMap map;
+    if (row < 0 || row >= m_occurrences.size()) {
+        return map;
+    }
+
+    const QModelIndex idx = index(row, 0);
+    const QHash<int, QByteArray> roles = roleNames();
+    for (auto it = roles.constBegin(); it != roles.constEnd(); ++it) {
+        map.insert(QString::fromUtf8(it.value()), data(idx, it.key()));
+    }
+    return map;
+}
+
 void EventListModel::refresh()
 {
     beginResetModel();

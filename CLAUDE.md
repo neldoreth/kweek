@@ -38,13 +38,28 @@ Modelo de datos de eventos implementado sobre KCalendarCore:
   `[rangeStart, rangeEnd)` usando `OccurrenceIterator`, ordenadas por inicio.
   Roles: `uid`, `summary`, `description`, `location`, `start`, `end`,
   `allDay`, `color`, `recurring`, `recurrence`, `reminderMinutes`, `busy`.
-- `src/qml/CalendarPage.qml` + `src/qml/EventEditDialog.qml` — vista de
-  agenda semanal mínima para probar el modelo: alta/edición/borrado y
-  acciones rápidas de posponer +1h/+1día por evento.
+- `src/qml/CalendarPage.qml` — página principal: cabecera con
+  Hoy/Anterior/Siguiente/Nuevo evento, selector de vista (Agenda/Mes/Semana)
+  y título dinámico (mes/año o rango de semana).
+- `src/qml/AgendaView.qml` — lista semanal de eventos (alta/edición/borrado,
+  posponer +1h/+1día).
+- `src/qml/MonthView.qml` — cuadrícula mensual (6x7), chips de eventos por
+  día (máx. 3 + "+N more"), clic en día = nuevo evento, doble clic = ir a
+  vista semana de ese día.
+- `src/qml/WeekView.qml` — rejilla horaria de 24h por 7 días, fila separada
+  para eventos de todo el día, línea roja de "ahora" en el día actual,
+  eventos solapados se reparten en columnas.
+- `src/qml/EventEditDialog.qml` — diálogo de alta/edición compartido por las
+  tres vistas (`CalendarManager.eventData(uid)` rellena el formulario al
+  editar).
+- `src/qml/DateUtils.js` — utilidades de fechas (semana empieza en lunes).
 
 Verificado: compila limpio y se ejecuta sin errores QML
 (`cmake -B build -G Ninja && cmake --build build`); probado end-to-end
-(add/reschedule/update) inspeccionando el `.ics` resultante.
+(add/reschedule/update, incl. eventos recurrentes y de todo el día)
+inspeccionando el `.ics` resultante. No se pudo tomar captura visual en
+este entorno (la ventana no aparecía en `spectacle`), pendiente de
+verificación visual manual.
 
 Nota de CMake: fue necesario añadir `target_include_directories(kweek
 PRIVATE core)` para que la generación automática de `qmltyperegistrations`
@@ -203,8 +218,11 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 - [x] Crear/editar/eliminar eventos (calendario local)
 - [x] Recurrencias básicas (diaria/semanal/mensual/anual vía RRULE)
 - [x] Acciones de posponer/adelantar (reschedule manteniendo duración)
-- [x] Vista de agenda mínima de prueba (lista semanal)
-- [ ] Vistas: mes, semana, día (calendario visual completo)
+- [x] Vista de agenda semanal (lista)
+- [x] Vista de mes (cuadrícula 6x7 con chips de eventos, +N more)
+- [x] Vista de semana (rejilla horaria 24h, eventos todo el día separados,
+      indicador de "ahora")
+- [ ] Vista de día
 - [ ] Drag & drop para mover/redimensionar eventos
 - [ ] Colores de calendario personalizables (por calendario, no solo por evento)
 - [ ] Múltiples calendarios locales (actualmente un único `.ics`)

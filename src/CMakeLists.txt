@@ -11,6 +11,10 @@ qt_add_qml_module(kweek
         qml/Main.qml
         qml/CalendarPage.qml
         qml/EventEditDialog.qml
+        qml/AgendaView.qml
+        qml/MonthView.qml
+        qml/WeekView.qml
+        qml/DateUtils.js
 )
 
 target_include_directories(kweek PRIVATE core)

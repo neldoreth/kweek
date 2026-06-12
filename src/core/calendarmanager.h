@@ -65,6 +65,12 @@ public:
     Q_INVOKABLE bool removeEvent(const QString &uid);
 
     /**
+     * Returns the fields of the event with the given UID as a map, suitable
+     * for pre-filling an edit dialog. Returns an empty map if not found.
+     */
+    Q_INVOKABLE QVariantMap eventData(const QString &uid) const;
+
+    /**
      * Shifts both the start and end of an event by @p secondsDelta,
      * preserving its duration. Used for "postpone" (positive delta) and
      * "advance" (negative delta) quick actions. Returns false if not found.

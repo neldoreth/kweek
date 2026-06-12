@@ -56,6 +56,9 @@ public:
     /// Re-reads occurrences from the calendar for the current range.
     Q_INVOKABLE void refresh();
 
+    /// Returns all role values for the occurrence at @p row as a map, for convenient iteration from QML.
+    Q_INVOKABLE QVariantMap get(int row) const;
+
 Q_SIGNALS:
     void calendarManagerChanged();
     void rangeChanged();

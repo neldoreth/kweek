@@ -8,6 +8,7 @@
 #include <KCalendarCore/CalFormat>
 #include <KCalendarCore/Event>
 #include <KCalendarCore/Recurrence>
+#include <KCalendarCore/RecurrenceRule>
 
 using namespace KCalendarCore;
 
@@ -145,6 +146,56 @@ bool CalendarManager::removeEvent(const QString &uid)
     m_calendar->deleteEvent(event);
     save();
     return true;
+}
+
+QVariantMap CalendarManager::eventData(const QString &uid) const
+{
+    QVariantMap map;
+
+    const Event::Ptr event = m_calendar->event(uid);
+    if (!event) {
+        return map;
+    }
+
+    map.insert(QStringLiteral("uid"), event->uid());
+    map.insert(QStringLiteral("summary"), event->summary());
+    map.insert(QStringLiteral("description"), event->description());
+    map.insert(QStringLiteral("location"), event->location());
+    map.insert(QStringLiteral("start"), event->dtStart());
+    map.insert(QStringLiteral("end"), event->dtEnd());
+    map.insert(QStringLiteral("allDay"), event->allDay());
+    map.insert(QStringLiteral("color"), event->customProperty(kPropertyApp, kColorProperty));
+    map.insert(QStringLiteral("busy"), event->transparency() == Event::Opaque);
+
+    QString recurrence = QStringLiteral("none");
+    if (event->recurs()) {
+        switch (event->recurrence()->recurrenceType()) {
+        case RecurrenceRule::rDaily:
+            recurrence = QStringLiteral("daily");
+            break;
+        case RecurrenceRule::rWeekly:
+            recurrence = QStringLiteral("weekly");
+            break;
+        case RecurrenceRule::rMonthly:
+            recurrence = QStringLiteral("monthly");
+            break;
+        case RecurrenceRule::rYearly:
+            recurrence = QStringLiteral("yearly");
+            break;
+        default:
+            break;
+        }
+    }
+    map.insert(QStringLiteral("recurrence"), recurrence);
+
+    int reminderMinutes = -1;
+    const Alarm::List alarms = event->alarms();
+    if (!alarms.isEmpty()) {
+        reminderMinutes = int(-alarms.first()->startOffset().asSeconds() / 60);
+    }
+    map.insert(QStringLiteral("reminderMinutes"), reminderMinutes);
+
+    return map;
 }
 
 bool CalendarManager::rescheduleEvent(const QString &uid, qint64 secondsDelta)
