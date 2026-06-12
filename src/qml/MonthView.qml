@@ -117,6 +117,17 @@ ColumnLayout {
                     onDoubleClicked: root.dayActivated(cellData.date)
                 }
 
+                DropArea {
+                    anchors.fill: parent
+
+                    onDropped: drop => {
+                        const dayDelta = Math.round((cellData.date - drop.source.originDate) / 86400000);
+                        if (dayDelta !== 0) {
+                            CalendarManager.rescheduleEvent(drop.source.eventUid, dayDelta * 86400);
+                        }
+                    }
+                }
+
                 ColumnLayout {
                     anchors.fill: parent
                     anchors.margins: Kirigami.Units.smallSpacing
@@ -132,10 +143,19 @@ ColumnLayout {
                         model: cellData ? cellData.events.slice(0, 3) : []
 
                         Rectangle {
+                            id: chip
+
                             Layout.fillWidth: true
                             height: Kirigami.Units.gridUnit
                             radius: 3
                             color: modelData.color.length > 0 ? modelData.color : Kirigami.Theme.highlightColor
+
+                            readonly property string eventUid: modelData.uid
+                            readonly property date originDate: cellData.date
+
+                            Drag.active: chipMouseArea.drag.active
+                            Drag.dragType: Drag.Automatic
+                            Drag.supportedActions: Qt.MoveAction
 
                             Controls.Label {
                                 anchors.fill: parent
@@ -149,8 +169,11 @@ ColumnLayout {
                             }
 
                             MouseArea {
+                                id: chipMouseArea
                                 anchors.fill: parent
+                                drag.target: chip
                                 onClicked: root.eventActivated(modelData.uid)
+                                onReleased: if (chip.Drag.active) chip.Drag.drop()
                             }
                         }
                     }

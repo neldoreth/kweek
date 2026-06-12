@@ -45,10 +45,15 @@ Modelo de datos de eventos implementado sobre KCalendarCore:
   posponer +1h/+1día).
 - `src/qml/MonthView.qml` — cuadrícula mensual (6x7), chips de eventos por
   día (máx. 3 + "+N more"), clic en día = nuevo evento, doble clic = ir a
-  vista semana de ese día.
+  vista semana de ese día. Los chips se pueden arrastrar y soltar sobre otro
+  día (`Drag`/`DropArea`) para mover el evento conservando la hora
+  (`rescheduleEvent`).
 - `src/qml/WeekView.qml` — rejilla horaria de 24h por 7 días, fila separada
   para eventos de todo el día, línea roja de "ahora" en el día actual,
-  eventos solapados se reparten en columnas.
+  eventos solapados se reparten en columnas. Cada bloque de evento se puede
+  arrastrar (mover día/hora, snap a 15 min, `rescheduleEvent`) o redimensionar
+  desde su borde inferior (cambia solo la hora de fin, `updateEvent`); un
+  clic simple sigue abriendo el diálogo de edición.
 - `src/qml/EventEditDialog.qml` — diálogo de alta/edición compartido por las
   tres vistas (`CalendarManager.eventData(uid)` rellena el formulario al
   editar).
@@ -223,7 +228,9 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 - [x] Vista de semana (rejilla horaria 24h, eventos todo el día separados,
       indicador de "ahora")
 - [ ] Vista de día
-- [ ] Drag & drop para mover/redimensionar eventos
+- [x] Drag & drop para mover/redimensionar eventos (vista de semana: arrastrar
+      bloque para cambiar día/hora, asa inferior para redimensionar duración;
+      vista de mes: arrastrar chip de evento a otro día)
 - [ ] Colores de calendario personalizables (por calendario, no solo por evento)
 - [ ] Múltiples calendarios locales (actualmente un único `.ics`)
 

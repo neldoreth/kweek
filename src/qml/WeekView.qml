@@ -173,6 +173,7 @@ ColumnLayout {
         Layout.fillHeight: true
 
         RowLayout {
+            id: weekRow
             width: parent.width
             spacing: 1
 
@@ -260,7 +261,10 @@ ColumnLayout {
                         model: dayColumn.dayEvents
 
                         Rectangle {
+                            id: eventRect
+
                             readonly property int columnCount: Math.min(dayColumn.dayEvents.length, 3)
+                            readonly property int snapMinutes: 15
 
                             x: (width + 2) * (modelData.column % columnCount)
                             y: modelData.top
@@ -268,6 +272,8 @@ ColumnLayout {
                             height: modelData.height
                             radius: 3
                             color: modelData.event.color.length > 0 ? modelData.event.color : Kirigami.Theme.highlightColor
+                            opacity: moveArea.dragging ? 0.7 : 1
+                            z: (moveArea.dragging || resizeArea.resizing) ? 10 : 0
 
                             ColumnLayout {
                                 anchors.fill: parent
@@ -286,7 +292,7 @@ ColumnLayout {
                                 Controls.Label {
                                     Layout.fillWidth: true
                                     elide: Text.ElideRight
-                                    visible: modelData.height > Kirigami.Units.gridUnit * 1.8
+                                    visible: eventRect.height > Kirigami.Units.gridUnit * 1.8
                                     text: Qt.formatTime(modelData.event.start, "HH:mm") + " – " + Qt.formatTime(modelData.event.end, "HH:mm")
                                     color: "white"
                                     opacity: 0.85
@@ -294,9 +300,120 @@ ColumnLayout {
                                 }
                             }
 
+                            // Move (drag to change day/time, preserving duration).
                             MouseArea {
+                                id: moveArea
+
                                 anchors.fill: parent
-                                onClicked: root.eventActivated(modelData.event.uid)
+                                anchors.bottomMargin: 6
+                                preventStealing: true
+                                cursorShape: dragging ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+
+                                property bool dragging: false
+                                property real pressX: 0
+                                property real pressY: 0
+                                property real origX: 0
+                                property real origY: 0
+
+                                onPressed: mouse => {
+                                    const p = mapToItem(weekRow, mouse.x, mouse.y);
+                                    pressX = p.x;
+                                    pressY = p.y;
+                                    origX = eventRect.x;
+                                    origY = eventRect.y;
+                                    dragging = false;
+                                }
+
+                                onPositionChanged: mouse => {
+                                    const p = mapToItem(weekRow, mouse.x, mouse.y);
+                                    const dx = p.x - pressX;
+                                    const dy = p.y - pressY;
+                                    if (!dragging && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) {
+                                        dragging = true;
+                                    }
+                                    if (dragging) {
+                                        eventRect.x = origX + dx;
+                                        eventRect.y = Math.max(0, origY + dy);
+                                    }
+                                }
+
+                                onReleased: mouse => {
+                                    if (!dragging) {
+                                        root.eventActivated(modelData.event.uid);
+                                        return;
+                                    }
+                                    dragging = false;
+
+                                    const p = mapToItem(weekRow, mouse.x, mouse.y);
+                                    const dx = p.x - pressX;
+                                    const dy = p.y - pressY;
+
+                                    const dayDelta = Math.round(dx / dayColumn.width);
+                                    const minuteDelta = Math.round((dy / root.hourHeight * 60) / eventRect.snapMinutes) * eventRect.snapMinutes;
+                                    const secondsDelta = dayDelta * 86400 + minuteDelta * 60;
+
+                                    if (secondsDelta !== 0) {
+                                        CalendarManager.rescheduleEvent(modelData.event.uid, secondsDelta);
+                                    } else {
+                                        // Snap back to the original position.
+                                        eventRect.x = origX;
+                                        eventRect.y = origY;
+                                    }
+                                }
+                            }
+
+                            // Resize handle (drag to change duration).
+                            MouseArea {
+                                id: resizeArea
+
+                                height: 6
+                                width: parent.width
+                                anchors.bottom: parent.bottom
+                                preventStealing: true
+                                cursorShape: Qt.SizeVerCursor
+
+                                property bool resizing: false
+                                property real pressGlobalY: 0
+                                property real origHeight: 0
+
+                                onPressed: mouse => {
+                                    pressGlobalY = mapToItem(weekRow, mouse.x, mouse.y).y;
+                                    origHeight = eventRect.height;
+                                    resizing = true;
+                                }
+
+                                onPositionChanged: mouse => {
+                                    if (!resizing) {
+                                        return;
+                                    }
+                                    const currentY = mapToItem(weekRow, mouse.x, mouse.y).y;
+                                    const dy = currentY - pressGlobalY;
+                                    const minHeight = root.hourHeight * eventRect.snapMinutes / 60;
+                                    eventRect.height = Math.max(origHeight + dy, minHeight);
+                                }
+
+                                onReleased: mouse => {
+                                    resizing = false;
+
+                                    const currentY = mapToItem(weekRow, mouse.x, mouse.y).y;
+                                    const dy = currentY - pressGlobalY;
+                                    const minuteDelta = Math.round((dy / root.hourHeight * 60) / eventRect.snapMinutes) * eventRect.snapMinutes;
+
+                                    const e = modelData.event;
+                                    let newEnd = new Date(e.end.getTime() + minuteDelta * 60000);
+                                    const minEnd = new Date(e.start.getTime() + eventRect.snapMinutes * 60000);
+                                    if (newEnd < minEnd) {
+                                        newEnd = minEnd;
+                                    }
+
+                                    if (newEnd.getTime() !== e.end.getTime()) {
+                                        CalendarManager.updateEvent(e.uid, e.summary, e.description, e.location,
+                                                                      e.start, newEnd, e.allDay, e.color,
+                                                                      e.recurrence, e.reminderMinutes, e.busy);
+                                    } else {
+                                        eventRect.height = origHeight;
+                                    }
+                                }
                             }
                         }
                     }
