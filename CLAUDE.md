@@ -349,3 +349,16 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 - ¿AEMET además de Open-Meteo, o solo Open-Meteo para simplificar?
 - ¿Soporte de tareas/to-dos además de eventos (como BusyCal)?
 - Estrategia exacta de resolución de conflictos de sincronización.
+- **Integración Google Calendar (próxima tarea)**: requiere un OAuth client
+  ID/secret tipo "Desktop app" creado en Google Cloud Console (con
+  `Qt6::NetworkAuth` + `QOAuth2AuthorizationCodeFlow` con PKCE y un
+  `QOAuthHttpServerReplyHandler` local para el redirect). Pendiente decidir:
+  ¿implementar todo el flujo con un client_id/secret de ejemplo en un fichero
+  de config a rellenar más tarde, o esperar a que el usuario aporte
+  credenciales reales de un proyecto ya creado? Sin esto no se puede probar
+  el login real en este entorno. Arquitectura prevista: nuevo
+  `GoogleCalendarClient` (OAuth2 + llamadas a Calendar API v3: listar
+  calendarios, listar/insertar/actualizar/borrar eventos, sync incremental
+  vía `syncToken`), nuevo tipo de cuenta/calendario `"google"` en
+  `CalendarManager` análogo al `"caldav"` actual, refresh token guardado en
+  KWallet vía `CredentialStore` (o una extensión de la misma).
