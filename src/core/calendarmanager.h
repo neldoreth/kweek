@@ -38,22 +38,29 @@ public:
         QString name;
         QString color;
         bool visible = true;
-        /// "local" or "caldav".
+        /// "local", "caldav" or "google".
         QString type = QStringLiteral("local");
-        /// Only set for type == "caldav": id of the owning account.
+        /// Only set for type == "caldav"/"google": id of the owning account.
         QString accountId;
-        /// Only set for type == "caldav": URL of the remote calendar collection.
+        /// For type == "caldav": URL of the remote calendar collection.
+        /// For type == "google": the Google calendar id.
         QString remoteUrl;
         KCalendarCore::MemoryCalendar::Ptr calendar;
         KCalendarCore::FileStorage::Ptr storage;
-        /// Only used for type == "caldav": uid -> {href, etag}.
+        /// uid -> {href, etag} for "caldav", uid -> {googleEventId, etag} for "google".
         SyncItems syncItems;
+        /// Only used for type == "google": incremental sync token.
+        QString syncToken;
     };
 
-    /// A CalDAV account: credentials are stored separately in KWallet.
+    /// A CalDAV or Google account: credentials/tokens are stored separately in KWallet.
     struct Account {
         QString id;
+        /// "caldav" or "google". Accounts loaded without a type are assumed "caldav".
+        QString type = QStringLiteral("caldav");
+        /// Only set for type == "caldav".
         QString serverUrl;
+        /// Username (CalDAV) or email address (Google).
         QString username;
     };
 
@@ -84,7 +91,15 @@ public:
      */
     Q_INVOKABLE void addCalDavAccount(const QString &serverUrl, const QString &username, const QString &password);
 
-    /// Pulls remote changes for a CalDAV calendar. No-op for local calendars.
+    /**
+     * Connects a Google account interactively: runs the OAuth2 PKCE flow via
+     * the system browser, stores the refresh token in KWallet, lists the
+     * user's Google calendars and adds one local calendar per discovered
+     * calendar. Emits googleAccountAdded() with the result.
+     */
+    Q_INVOKABLE void addGoogleAccount();
+
+    /// Pulls remote changes for a CalDAV/Google calendar. No-op for local calendars.
     Q_INVOKABLE void syncCalendar(const QString &calendarId);
 
     /// Syncs all CalDAV calendars.
@@ -153,6 +168,9 @@ Q_SIGNALS:
     /// Result of addCalDavAccount(): @p error is empty on success.
     void calDavAccountAdded(const QString &accountId, int calendarCount, const QString &error);
 
+    /// Result of addGoogleAccount(): @p error is empty on success.
+    void googleAccountAdded(const QString &accountId, int calendarCount, const QString &error);
+
     void syncStarted(const QString &calendarId);
     void syncFinished(const QString &calendarId);
     void syncError(const QString &calendarId, const QString &error);
@@ -174,11 +192,20 @@ private:
     const LocalCalendar *findCalendarById(const QString &id) const;
     LocalCalendar *findCalendarForEvent(const QString &uid, KCalendarCore::Event::Ptr *eventOut = nullptr);
 
-    /// Pushes a create/update of @p event to its calendar's CalDAV server, if any.
+    /// Pushes a create/update of @p event to its calendar's CalDAV/Google server, if any.
     void pushEvent(LocalCalendar &entry, const KCalendarCore::Event::Ptr &event);
 
-    /// Pushes a deletion of @p uid to its calendar's CalDAV server, if any.
+    /// Pushes a deletion of @p uid to its calendar's CalDAV/Google server, if any.
     void pushDelete(LocalCalendar &entry, const QString &uid);
+
+    /// Pulls remote changes for a CalDAV calendar (see syncCalendar()).
+    void syncCalDavCalendar(LocalCalendar &entry);
+
+    /// Pulls remote changes for a Google calendar (see syncCalendar()).
+    void syncGoogleCalendar(LocalCalendar &entry);
+
+    /// Performs a Google calendar sync, optionally forcing a full resync (empty syncToken).
+    void syncGoogleCalendar(LocalCalendar &entry, bool forceFullResync);
 
     QList<LocalCalendar> m_calendars;
     QList<Account> m_accounts;

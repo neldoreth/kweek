@@ -82,14 +82,14 @@ ColumnLayout {
             }
 
             Controls.BusyIndicator {
-                visible: modelData.type === "caldav" && root.syncingIds[modelData.id]
+                visible: (modelData.type === "caldav" || modelData.type === "google") && root.syncingIds[modelData.id]
                 implicitWidth: Kirigami.Units.iconSizes.small
                 implicitHeight: Kirigami.Units.iconSizes.small
             }
 
             Controls.ToolButton {
                 icon.name: "view-refresh"
-                visible: modelData.type === "caldav" && !root.syncingIds[modelData.id]
+                visible: (modelData.type === "caldav" || modelData.type === "google") && !root.syncingIds[modelData.id]
                 onClicked: CalendarManager.syncCalendar(modelData.id)
             }
 
@@ -120,8 +120,20 @@ ColumnLayout {
         onClicked: addAccountDialog.open2()
     }
 
+    Controls.Button {
+        Layout.fillWidth: true
+        Layout.margins: Kirigami.Units.smallSpacing
+        icon.name: "cloud-upload"
+        text: i18nc("@action:button", "Connect Google account…")
+        onClicked: addGoogleAccountDialog.open2()
+    }
+
     AddCalDavAccountDialog {
         id: addAccountDialog
+    }
+
+    AddGoogleAccountDialog {
+        id: addGoogleAccountDialog
     }
 
     Item { Layout.fillHeight: true }

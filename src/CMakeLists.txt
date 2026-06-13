@@ -4,6 +4,7 @@ qt_add_executable(kweek
     core/eventlistmodel.cpp
     core/credentialstore.cpp
     core/caldavclient.cpp
+    core/googlecalendarclient.cpp
 )
 
 qt_add_qml_module(kweek
@@ -15,6 +16,7 @@ qt_add_qml_module(kweek
         qml/EventEditDialog.qml
         qml/CalendarSidebar.qml
         qml/AddCalDavAccountDialog.qml
+        qml/AddGoogleAccountDialog.qml
         qml/AgendaView.qml
         qml/MonthView.qml
         qml/WeekView.qml
@@ -28,6 +30,7 @@ target_link_libraries(kweek PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::Network
+    Qt6::NetworkAuth
     KF6::CoreAddons
     KF6::I18n
     KF6::CalendarCore

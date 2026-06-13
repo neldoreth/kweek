@@ -2,7 +2,9 @@
 
 #include "caldavclient.h"
 #include "credentialstore.h"
+#include "googlecalendarclient.h"
 
+#include <QDate>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -31,6 +33,7 @@ constexpr auto kDefaultCalendarId = "default";
 constexpr auto kDefaultCalendarColor = "#7B61FF";
 constexpr auto kTypeLocal = "local";
 constexpr auto kTypeCalDav = "caldav";
+constexpr auto kTypeGoogle = "google";
 
 void applyRecurrence(const Event::Ptr &event, const QString &recurrence)
 {
@@ -88,6 +91,149 @@ void applyEventFields(const Event::Ptr &event,
     applyReminder(event, reminderMinutes);
 }
 
+/// Maps a KCalendarCore recurrence type to the FREQ value used in RRULE strings.
+QString rruleFreqForRecurrenceType(int recurrenceType)
+{
+    switch (recurrenceType) {
+    case RecurrenceRule::rDaily:
+        return QStringLiteral("DAILY");
+    case RecurrenceRule::rWeekly:
+        return QStringLiteral("WEEKLY");
+    case RecurrenceRule::rMonthly:
+        return QStringLiteral("MONTHLY");
+    case RecurrenceRule::rYearly:
+        return QStringLiteral("YEARLY");
+    default:
+        return QString();
+    }
+}
+
+/// Extracts the FREQ value from a "RRULE:FREQ=...;..." string, or an empty string.
+QString rruleFreq(const QString &rrule)
+{
+    const QString rule = rrule.startsWith(QLatin1String("RRULE:")) ? rrule.mid(6) : rrule;
+    for (const QString &part : rule.split(QLatin1Char(';'))) {
+        if (part.startsWith(QLatin1String("FREQ="))) {
+            return part.mid(5);
+        }
+    }
+    return QString();
+}
+
+/// Converts a Google Calendar API event resource into a KCalendarCore event.
+/// The event's UID is set to the Google event id.
+Event::Ptr googleJsonToEvent(const QJsonObject &json)
+{
+    Event::Ptr event(new Event);
+    event->setUid(json.value(QStringLiteral("id")).toString());
+    event->setSummary(json.value(QStringLiteral("summary")).toString());
+    event->setDescription(json.value(QStringLiteral("description")).toString());
+    event->setLocation(json.value(QStringLiteral("location")).toString());
+
+    const QJsonObject start = json.value(QStringLiteral("start")).toObject();
+    const QJsonObject end = json.value(QStringLiteral("end")).toObject();
+    const bool allDay = start.contains(QStringLiteral("date"));
+    event->setAllDay(allDay);
+
+    if (allDay) {
+        event->setDtStart(QDateTime(QDate::fromString(start.value(QStringLiteral("date")).toString(), Qt::ISODate), QTime(0, 0)));
+        event->setDtEnd(QDateTime(QDate::fromString(end.value(QStringLiteral("date")).toString(), Qt::ISODate), QTime(0, 0)));
+    } else {
+        QDateTime dtStart = QDateTime::fromString(start.value(QStringLiteral("dateTime")).toString(), Qt::ISODate);
+        QDateTime dtEnd = QDateTime::fromString(end.value(QStringLiteral("dateTime")).toString(), Qt::ISODate);
+        const QTimeZone startZone(start.value(QStringLiteral("timeZone")).toString().toUtf8());
+        const QTimeZone endZone(end.value(QStringLiteral("timeZone")).toString().toUtf8());
+        if (startZone.isValid()) {
+            dtStart = dtStart.toTimeZone(startZone);
+        }
+        if (endZone.isValid()) {
+            dtEnd = dtEnd.toTimeZone(endZone);
+        }
+        event->setDtStart(dtStart);
+        event->setDtEnd(dtEnd);
+    }
+
+    const QString transparency = json.value(QStringLiteral("transparency")).toString();
+    event->setTransparency(transparency == QLatin1String("transparent") ? Event::Transparent : Event::Opaque);
+
+    event->recurrence()->clear();
+    for (const QJsonValue &value : json.value(QStringLiteral("recurrence")).toArray()) {
+        const QString freq = rruleFreq(value.toString());
+        if (freq == QLatin1String("DAILY")) {
+            event->recurrence()->setDaily(1);
+        } else if (freq == QLatin1String("WEEKLY")) {
+            event->recurrence()->setWeekly(1);
+        } else if (freq == QLatin1String("MONTHLY")) {
+            event->recurrence()->setMonthly(1);
+        } else if (freq == QLatin1String("YEARLY")) {
+            event->recurrence()->setYearly(1);
+        }
+        break;
+    }
+
+    event->clearAlarms();
+    const QJsonArray overrides = json.value(QStringLiteral("reminders")).toObject().value(QStringLiteral("overrides")).toArray();
+    for (const QJsonValue &value : overrides) {
+        const QJsonObject override = value.toObject();
+        if (override.value(QStringLiteral("method")).toString() != QLatin1String("popup")) {
+            continue;
+        }
+        Alarm::Ptr alarm = event->newAlarm();
+        alarm->setType(Alarm::Display);
+        alarm->setDisplayAlarm(event->summary());
+        alarm->setStartOffset(Duration(-override.value(QStringLiteral("minutes")).toInt() * 60));
+        alarm->setEnabled(true);
+        break;
+    }
+
+    return event;
+}
+
+/// Converts a KCalendarCore event into a Google Calendar API event resource (without "id").
+QJsonObject eventToGoogleJson(const Event::Ptr &event)
+{
+    QJsonObject json;
+    json.insert(QStringLiteral("summary"), event->summary());
+    json.insert(QStringLiteral("description"), event->description());
+    json.insert(QStringLiteral("location"), event->location());
+
+    QJsonObject start;
+    QJsonObject end;
+    if (event->allDay()) {
+        start.insert(QStringLiteral("date"), event->dtStart().date().toString(Qt::ISODate));
+        end.insert(QStringLiteral("date"), event->dtEnd().date().addDays(1).toString(Qt::ISODate));
+    } else {
+        start.insert(QStringLiteral("dateTime"), event->dtStart().toString(Qt::ISODate));
+        start.insert(QStringLiteral("timeZone"), QString::fromUtf8(event->dtStart().timeZone().id()));
+        end.insert(QStringLiteral("dateTime"), event->dtEnd().toString(Qt::ISODate));
+        end.insert(QStringLiteral("timeZone"), QString::fromUtf8(event->dtEnd().timeZone().id()));
+    }
+    json.insert(QStringLiteral("start"), start);
+    json.insert(QStringLiteral("end"), end);
+
+    json.insert(QStringLiteral("transparency"), event->transparency() == Event::Transparent ? QStringLiteral("transparent") : QStringLiteral("opaque"));
+
+    if (event->recurs()) {
+        const QString freq = rruleFreqForRecurrenceType(event->recurrence()->recurrenceType());
+        if (!freq.isEmpty()) {
+            json.insert(QStringLiteral("recurrence"), QJsonArray{QString(QStringLiteral("RRULE:FREQ=") + freq)});
+        }
+    }
+
+    QJsonObject reminders;
+    reminders.insert(QStringLiteral("useDefault"), false);
+    const Alarm::List alarms = event->alarms();
+    if (!alarms.isEmpty()) {
+        reminders.insert(QStringLiteral("overrides"), QJsonArray{QJsonObject{
+            {QStringLiteral("method"), QStringLiteral("popup")},
+            {QStringLiteral("minutes"), int(-alarms.first()->startOffset().asSeconds() / 60)},
+        }});
+    }
+    json.insert(QStringLiteral("reminders"), reminders);
+
+    return json;
+}
+
 }
 
 CalendarManager::CalendarManager(QObject *parent)
@@ -140,6 +286,7 @@ void CalendarManager::loadSyncState(LocalCalendar &entry)
         entry.syncItems.insert(it.key(), qMakePair(item.value(QStringLiteral("href")).toString(),
                                                      item.value(QStringLiteral("etag")).toString()));
     }
+    entry.syncToken = obj.value(QStringLiteral("syncToken")).toString();
 }
 
 void CalendarManager::saveSyncState(const LocalCalendar &entry)
@@ -154,6 +301,9 @@ void CalendarManager::saveSyncState(const LocalCalendar &entry)
 
     QJsonObject obj;
     obj.insert(QStringLiteral("items"), items);
+    if (entry.type == QLatin1String(kTypeGoogle)) {
+        obj.insert(QStringLiteral("syncToken"), entry.syncToken);
+    }
 
     QFile file(syncStatePath(entry.id));
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -173,6 +323,7 @@ void CalendarManager::loadAccounts()
         const QJsonObject obj = value.toObject();
         Account account;
         account.id = obj.value(QStringLiteral("id")).toString();
+        account.type = obj.value(QStringLiteral("type")).toString(QString::fromLatin1(kTypeCalDav));
         account.serverUrl = obj.value(QStringLiteral("serverUrl")).toString();
         account.username = obj.value(QStringLiteral("username")).toString();
         m_accounts.append(account);
@@ -185,6 +336,7 @@ void CalendarManager::saveAccountsMeta()
     for (const Account &account : m_accounts) {
         array.append(QJsonObject{
             {QStringLiteral("id"), account.id},
+            {QStringLiteral("type"), account.type},
             {QStringLiteral("serverUrl"), account.serverUrl},
             {QStringLiteral("username"), account.username},
         });
@@ -232,7 +384,7 @@ void CalendarManager::loadCalendars()
         entry.storage = FileStorage::Ptr(new FileStorage(entry.calendar, icsPathFor(entry.id)));
         entry.storage->load();
 
-        if (entry.type == QLatin1String(kTypeCalDav)) {
+        if (entry.type == QLatin1String(kTypeCalDav) || entry.type == QLatin1String(kTypeGoogle)) {
             loadSyncState(entry);
         }
 
@@ -253,7 +405,7 @@ void CalendarManager::saveCalendarsMeta()
             {QStringLiteral("visible"), entry.visible},
             {QStringLiteral("type"), entry.type},
         };
-        if (entry.type == QLatin1String(kTypeCalDav)) {
+        if (entry.type == QLatin1String(kTypeCalDav) || entry.type == QLatin1String(kTypeGoogle)) {
             obj.insert(QStringLiteral("accountId"), entry.accountId);
             obj.insert(QStringLiteral("remoteUrl"), entry.remoteUrl);
         }
@@ -323,6 +475,62 @@ CalendarManager::LocalCalendar *CalendarManager::findCalendarForEvent(const QStr
 
 void CalendarManager::pushEvent(LocalCalendar &entry, const Event::Ptr &event)
 {
+    if (entry.type == QLatin1String(kTypeGoogle)) {
+        QString email;
+        QString refreshToken;
+        if (!CredentialStore::readGoogleTokens(entry.accountId, email, refreshToken)) {
+            Q_EMIT syncError(entry.id, i18nc("@info", "No stored credentials for this account."));
+            return;
+        }
+
+        const QJsonObject json = eventToGoogleJson(event);
+        QString googleEventId;
+        const auto syncIt = entry.syncItems.constFind(event->uid());
+        if (syncIt != entry.syncItems.constEnd()) {
+            googleEventId = syncIt.value().first;
+        }
+
+        auto *client = new GoogleCalendarClient(this);
+        const QString calendarId = entry.id;
+        const QString uid = event->uid();
+        const QString remoteCalendarId = entry.remoteUrl;
+
+        connect(client, &GoogleCalendarClient::eventPut, this,
+                [this, client, calendarId, uid](const QString &eventId, const QString &etag, const QString &error) {
+                    client->deleteLater();
+
+                    if (!error.isEmpty()) {
+                        Q_EMIT syncError(calendarId, error);
+                        return;
+                    }
+
+                    LocalCalendar *target = findCalendarById(calendarId);
+                    if (!target) {
+                        return;
+                    }
+
+                    // Newly created events get a server-assigned id; rename the local UID to match.
+                    if (uid != eventId) {
+                        const Event::Ptr existing = target->calendar->event(uid);
+                        if (existing) {
+                            const Event::Ptr clone(existing->clone());
+                            clone->setUid(eventId);
+                            target->calendar->deleteEvent(existing);
+                            target->calendar->addEvent(clone);
+                            target->storage->save();
+                            Q_EMIT calendarChanged();
+                        }
+                        target->syncItems.remove(uid);
+                    }
+
+                    target->syncItems.insert(eventId, qMakePair(eventId, etag));
+                    saveSyncState(*target);
+                });
+
+        client->putEvent(refreshToken, remoteCalendarId, googleEventId, json);
+        return;
+    }
+
     if (entry.type != QLatin1String(kTypeCalDav)) {
         return;
     }
@@ -370,6 +578,29 @@ void CalendarManager::pushEvent(LocalCalendar &entry, const Event::Ptr &event)
 
 void CalendarManager::pushDelete(LocalCalendar &entry, const QString &uid)
 {
+    if (entry.type == QLatin1String(kTypeGoogle)) {
+        const auto syncIt = entry.syncItems.constFind(uid);
+        if (syncIt == entry.syncItems.constEnd()) {
+            return;
+        }
+
+        QString email;
+        QString refreshToken;
+        if (!CredentialStore::readGoogleTokens(entry.accountId, email, refreshToken)) {
+            return;
+        }
+
+        const QString googleEventId = syncIt.value().first;
+        const QString remoteCalendarId = entry.remoteUrl;
+        entry.syncItems.remove(uid);
+        saveSyncState(entry);
+
+        auto *client = new GoogleCalendarClient(this);
+        connect(client, &GoogleCalendarClient::eventDeleted, client, &QObject::deleteLater);
+        client->deleteEvent(refreshToken, remoteCalendarId, googleEventId);
+        return;
+    }
+
     if (entry.type != QLatin1String(kTypeCalDav)) {
         return;
     }
@@ -425,14 +656,14 @@ bool CalendarManager::removeCalendar(const QString &calendarId)
             const LocalCalendar removed = m_calendars.at(i);
 
             QFile::remove(icsPathFor(calendarId));
-            if (removed.type == QLatin1String(kTypeCalDav)) {
+            if (removed.type == QLatin1String(kTypeCalDav) || removed.type == QLatin1String(kTypeGoogle)) {
                 QFile::remove(syncStatePath(calendarId));
             }
             m_calendars.removeAt(i);
             saveCalendarsMeta();
 
-            // If this was the last calendar for its CalDAV account, drop the account too.
-            if (removed.type == QLatin1String(kTypeCalDav)) {
+            // If this was the last calendar for its CalDAV/Google account, drop the account too.
+            if (removed.type == QLatin1String(kTypeCalDav) || removed.type == QLatin1String(kTypeGoogle)) {
                 bool accountStillUsed = false;
                 for (const LocalCalendar &other : m_calendars) {
                     if (other.accountId == removed.accountId) {
@@ -561,21 +792,104 @@ void CalendarManager::addCalDavAccount(const QString &serverUrl, const QString &
     client->discoverCalendars(url, username, password);
 }
 
+void CalendarManager::addGoogleAccount()
+{
+    auto *client = new GoogleCalendarClient(this);
+    connect(client, &GoogleCalendarClient::authenticated, this, [this, client](const QString &refreshToken, const QString &email, const QString &error) {
+        if (!error.isEmpty()) {
+            client->deleteLater();
+            Q_EMIT googleAccountAdded(QString(), 0, error);
+            return;
+        }
+
+        const QString accountId = CalFormat::createUniqueId();
+        if (!CredentialStore::storeGoogleTokens(accountId, email, refreshToken)) {
+            client->deleteLater();
+            Q_EMIT googleAccountAdded(QString(), 0, i18nc("@info", "Could not save credentials to KWallet."));
+            return;
+        }
+
+        Account account;
+        account.id = accountId;
+        account.type = QString::fromLatin1(kTypeGoogle);
+        account.username = email;
+        m_accounts.append(account);
+        saveAccountsMeta();
+
+        connect(client, &GoogleCalendarClient::calendarsListed, this,
+                [this, client, accountId](const QList<GoogleCalendarClient::CalendarInfo> &discovered, const QString &error) {
+                    client->deleteLater();
+
+                    if (!error.isEmpty()) {
+                        Q_EMIT googleAccountAdded(accountId, 0, error);
+                        return;
+                    }
+                    if (discovered.isEmpty()) {
+                        Q_EMIT googleAccountAdded(accountId, 0, i18nc("@info", "No calendars were found on this account."));
+                        return;
+                    }
+
+                    QStringList newCalendarIds;
+                    for (const GoogleCalendarClient::CalendarInfo &info : discovered) {
+                        LocalCalendar entry;
+                        entry.id = CalFormat::createUniqueId();
+                        entry.name = info.displayName;
+                        entry.color = info.color.size() >= 7 ? info.color.left(7) : QString::fromLatin1(kDefaultCalendarColor);
+                        entry.visible = true;
+                        entry.type = QString::fromLatin1(kTypeGoogle);
+                        entry.accountId = accountId;
+                        entry.remoteUrl = info.id;
+                        entry.calendar = MemoryCalendar::Ptr(new MemoryCalendar(QTimeZone::systemTimeZone()));
+                        entry.storage = FileStorage::Ptr(new FileStorage(entry.calendar, icsPathFor(entry.id)));
+                        entry.storage->load();
+
+                        m_calendars.append(entry);
+                        newCalendarIds.append(entry.id);
+                    }
+                    saveCalendarsMeta();
+
+                    Q_EMIT calendarsChanged();
+                    Q_EMIT calendarChanged();
+                    Q_EMIT googleAccountAdded(accountId, newCalendarIds.size(), QString());
+
+                    for (const QString &id : newCalendarIds) {
+                        syncCalendar(id);
+                    }
+                });
+
+        client->listCalendars(refreshToken);
+    });
+
+    client->authenticate();
+}
+
 void CalendarManager::syncCalendar(const QString &calendarId)
 {
     LocalCalendar *entry = findCalendarById(calendarId);
-    if (!entry || entry->type != QLatin1String(kTypeCalDav)) {
+    if (!entry) {
         return;
     }
 
+    if (entry->type == QLatin1String(kTypeCalDav)) {
+        syncCalDavCalendar(*entry);
+    } else if (entry->type == QLatin1String(kTypeGoogle)) {
+        syncGoogleCalendar(*entry);
+    }
+}
+
+void CalendarManager::syncCalDavCalendar(LocalCalendar &entry)
+{
     QString username;
     QString password;
-    if (!CredentialStore::readCredentials(entry->accountId, username, password)) {
-        Q_EMIT syncError(calendarId, i18nc("@info", "No stored credentials for this account."));
+    if (!CredentialStore::readCredentials(entry.accountId, username, password)) {
+        Q_EMIT syncError(entry.id, i18nc("@info", "No stored credentials for this account."));
         return;
     }
 
-    Q_EMIT syncStarted(calendarId);
+    Q_EMIT syncStarted(entry.id);
+
+    const QString calendarId = entry.id;
+    const QUrl remoteUrl(entry.remoteUrl);
 
     auto *client = new CalDavClient(this);
     connect(client, &CalDavClient::eventsFetched, this, [this, client, calendarId](const QList<CalDavClient::RemoteEvent> &events, const QString &error) {
@@ -648,13 +962,91 @@ void CalendarManager::syncCalendar(const QString &calendarId)
         Q_EMIT syncFinished(calendarId);
     });
 
-    client->fetchEvents(QUrl(entry->remoteUrl), username, password);
+    client->fetchEvents(remoteUrl, username, password);
+}
+
+void CalendarManager::syncGoogleCalendar(LocalCalendar &entry)
+{
+    syncGoogleCalendar(entry, false);
+}
+
+void CalendarManager::syncGoogleCalendar(LocalCalendar &entry, bool forceFullResync)
+{
+    QString email;
+    QString refreshToken;
+    if (!CredentialStore::readGoogleTokens(entry.accountId, email, refreshToken)) {
+        Q_EMIT syncError(entry.id, i18nc("@info", "No stored credentials for this account."));
+        return;
+    }
+
+    Q_EMIT syncStarted(entry.id);
+
+    const QString calendarId = entry.id;
+    const QString remoteCalendarId = entry.remoteUrl;
+    const QString syncToken = forceFullResync ? QString() : entry.syncToken;
+
+    auto *client = new GoogleCalendarClient(this);
+    connect(client, &GoogleCalendarClient::eventsFetched, this,
+            [this, client, calendarId](const QList<GoogleCalendarClient::RemoteEvent> &events, const QString &nextSyncToken, bool syncTokenInvalid, const QString &error) {
+                client->deleteLater();
+
+                LocalCalendar *target = findCalendarById(calendarId);
+                if (!target) {
+                    return;
+                }
+
+                if (syncTokenInvalid) {
+                    target->syncToken.clear();
+                    target->syncItems.clear();
+                    saveSyncState(*target);
+                    syncGoogleCalendar(*target, true);
+                    return;
+                }
+
+                if (!error.isEmpty()) {
+                    Q_EMIT syncError(calendarId, error);
+                    return;
+                }
+
+                for (const GoogleCalendarClient::RemoteEvent &remote : events) {
+                    // Recurring-event exceptions are not yet handled by sync (v1 limitation).
+                    if (remote.json.contains(QStringLiteral("recurringEventId"))) {
+                        continue;
+                    }
+
+                    if (remote.json.value(QStringLiteral("status")).toString() == QLatin1String("cancelled")) {
+                        const Event::Ptr existing = target->calendar->event(remote.id);
+                        if (existing) {
+                            target->calendar->deleteEvent(existing);
+                        }
+                        target->syncItems.remove(remote.id);
+                        continue;
+                    }
+
+                    const Event::Ptr event = googleJsonToEvent(remote.json);
+                    const Event::Ptr existing = target->calendar->event(event->uid());
+                    if (existing) {
+                        target->calendar->deleteEvent(existing);
+                    }
+                    target->calendar->addEvent(event);
+                    target->syncItems.insert(event->uid(), qMakePair(event->uid(), remote.etag));
+                }
+
+                target->syncToken = nextSyncToken;
+                target->storage->save();
+                saveSyncState(*target);
+
+                Q_EMIT calendarChanged();
+                Q_EMIT syncFinished(calendarId);
+            });
+
+    client->fetchEvents(refreshToken, remoteCalendarId, syncToken);
 }
 
 void CalendarManager::syncAll()
 {
     for (const LocalCalendar &entry : m_calendars) {
-        if (entry.type == QLatin1String(kTypeCalDav)) {
+        if (entry.type == QLatin1String(kTypeCalDav) || entry.type == QLatin1String(kTypeGoogle)) {
             syncCalendar(entry.id);
         }
     }
