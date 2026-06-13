@@ -5,6 +5,7 @@
 #include <QMap>
 #include <QPair>
 #include <QQmlEngine>
+#include <QSet>
 #include <QVariantList>
 
 #include <KCalendarCore/FileStorage>
@@ -48,9 +49,14 @@ public:
         KCalendarCore::MemoryCalendar::Ptr calendar;
         KCalendarCore::FileStorage::Ptr storage;
         /// uid -> {href, etag} for "caldav", uid -> {googleEventId, etag} for "google".
+        /// Google recurrence exception instances use the composite key
+        /// "uid#recurrenceIdISO".
         SyncItems syncItems;
         /// Only used for type == "google": incremental sync token.
         QString syncToken;
+        /// UIDs with local edits that haven't been successfully pushed yet.
+        /// Retried on every sync; protected from being overwritten by pulls.
+        QSet<QString> pendingPush;
     };
 
     /// A CalDAV or Google account: credentials/tokens are stored separately in KWallet.
@@ -197,6 +203,12 @@ private:
 
     /// Pushes a deletion of @p uid to its calendar's CalDAV/Google server, if any.
     void pushDelete(LocalCalendar &entry, const QString &uid);
+
+    /// Re-attempts pushEvent() for every uid still in entry.pendingPush, e.g. after a sync.
+    void retryPendingPushes(LocalCalendar &entry);
+
+    /// Records that @p uid has an unpushed local edit, for CalDAV/Google calendars.
+    void markPendingPush(LocalCalendar &entry, const QString &uid);
 
     /// Pulls remote changes for a CalDAV calendar (see syncCalendar()).
     void syncCalDavCalendar(LocalCalendar &entry);

@@ -234,6 +234,36 @@ Event::Ptr googleJsonToEvent(const QJsonObject &json)
     return event;
 }
 
+/// Returns the QDateTime represented by a Google "originalStartTime"-shaped object
+/// ({"date": ...} or {"dateTime": ..., "timeZone": ...}).
+QDateTime googleOriginalStartTime(const QJsonObject &json)
+{
+    const QJsonObject original = json.value(QStringLiteral("originalStartTime")).toObject();
+    if (original.contains(QStringLiteral("date"))) {
+        return QDateTime(QDate::fromString(original.value(QStringLiteral("date")).toString(), Qt::ISODate), QTime(0, 0));
+    }
+
+    QDateTime dt = QDateTime::fromString(original.value(QStringLiteral("dateTime")).toString(), Qt::ISODate);
+    const QTimeZone zone(original.value(QStringLiteral("timeZone")).toString().toUtf8());
+    if (zone.isValid()) {
+        dt = dt.toTimeZone(zone);
+    }
+    return dt;
+}
+
+/// Builds a KCalendarCore exception event from a Google "instance" item that has a
+/// "recurringEventId" (a modified occurrence of a recurring event). The returned event
+/// shares its uid with the master series and has recurrenceId() set to the original
+/// occurrence's start (from "originalStartTime").
+Event::Ptr googleJsonToExceptionEvent(const QJsonObject &json)
+{
+    Event::Ptr event = googleJsonToEvent(json);
+    event->setUid(json.value(QStringLiteral("recurringEventId")).toString());
+    event->recurrence()->clear();
+    event->setRecurrenceId(googleOriginalStartTime(json));
+    return event;
+}
+
 /// Converts a KCalendarCore event into a Google Calendar API event resource (without "id").
 QJsonObject eventToGoogleJson(const Event::Ptr &event)
 {
@@ -340,6 +370,11 @@ void CalendarManager::loadSyncState(LocalCalendar &entry)
                                                      item.value(QStringLiteral("etag")).toString()));
     }
     entry.syncToken = obj.value(QStringLiteral("syncToken")).toString();
+
+    entry.pendingPush.clear();
+    for (const QJsonValue &value : obj.value(QStringLiteral("pendingPush")).toArray()) {
+        entry.pendingPush.insert(value.toString());
+    }
 }
 
 void CalendarManager::saveSyncState(const LocalCalendar &entry)
@@ -357,6 +392,12 @@ void CalendarManager::saveSyncState(const LocalCalendar &entry)
     if (entry.type == QLatin1String(kTypeGoogle)) {
         obj.insert(QStringLiteral("syncToken"), entry.syncToken);
     }
+
+    QJsonArray pendingPush;
+    for (const QString &uid : entry.pendingPush) {
+        pendingPush.append(uid);
+    }
+    obj.insert(QStringLiteral("pendingPush"), pendingPush);
 
     QFile file(syncStatePath(entry.id));
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -526,6 +567,30 @@ CalendarManager::LocalCalendar *CalendarManager::findCalendarForEvent(const QStr
     return nullptr;
 }
 
+void CalendarManager::markPendingPush(LocalCalendar &entry, const QString &uid)
+{
+    if (entry.type != QLatin1String(kTypeCalDav) && entry.type != QLatin1String(kTypeGoogle)) {
+        return;
+    }
+    entry.pendingPush.insert(uid);
+    saveSyncState(entry);
+}
+
+void CalendarManager::retryPendingPushes(LocalCalendar &entry)
+{
+    const QSet<QString> pending = entry.pendingPush;
+    for (const QString &uid : pending) {
+        const Event::Ptr event = entry.calendar->event(uid);
+        if (!event) {
+            // Locally deleted while offline; pushDelete() already handled the remote side.
+            entry.pendingPush.remove(uid);
+            continue;
+        }
+        pushEvent(entry, event);
+    }
+    saveSyncState(entry);
+}
+
 void CalendarManager::pushEvent(LocalCalendar &entry, const Event::Ptr &event)
 {
     if (entry.type == QLatin1String(kTypeGoogle)) {
@@ -574,9 +639,11 @@ void CalendarManager::pushEvent(LocalCalendar &entry, const Event::Ptr &event)
                             Q_EMIT calendarChanged();
                         }
                         target->syncItems.remove(uid);
+                        target->pendingPush.remove(uid);
                     }
 
                     target->syncItems.insert(eventId, qMakePair(eventId, etag));
+                    target->pendingPush.remove(eventId);
                     saveSyncState(*target);
                 });
 
@@ -623,6 +690,7 @@ void CalendarManager::pushEvent(LocalCalendar &entry, const Event::Ptr &event)
         }
 
         target->syncItems.insert(uid, qMakePair(href, newEtag));
+        target->pendingPush.remove(uid);
         saveSyncState(*target);
     });
 
@@ -646,6 +714,7 @@ void CalendarManager::pushDelete(LocalCalendar &entry, const QString &uid)
         const QString googleEventId = syncIt.value().first;
         const QString remoteCalendarId = entry.remoteUrl;
         entry.syncItems.remove(uid);
+        entry.pendingPush.remove(uid);
         saveSyncState(entry);
 
         auto *client = new GoogleCalendarClient(this);
@@ -672,6 +741,7 @@ void CalendarManager::pushDelete(LocalCalendar &entry, const QString &uid)
     const QString href = it.value().first;
     const QString etag = it.value().second;
     entry.syncItems.remove(uid);
+    entry.pendingPush.remove(uid);
     saveSyncState(entry);
 
     auto *client = new CalDavClient(this);
@@ -967,32 +1037,49 @@ void CalendarManager::syncCalDavCalendar(LocalCalendar &entry)
                 continue;
             }
 
+            // A resource may contain the master VEVENT plus RECURRENCE-ID overrides
+            // (exception instances) for the same uid.
+            Event::Ptr master;
+            Event::List exceptions;
             for (const Incidence::Ptr &incidence : temp->incidences()) {
-                // Recurring-event exceptions are not yet handled by sync (v1 limitation).
-                if (incidence->hasRecurrenceId()) {
-                    continue;
-                }
-
                 const Event::Ptr event = incidence.dynamicCast<Event>();
                 if (!event) {
                     continue;
                 }
-
-                const QString uid = event->uid();
-                remoteUids.insert(uid);
-
-                const auto syncIt = target->syncItems.constFind(uid);
-                if (syncIt != target->syncItems.constEnd() && syncIt.value().second == remote.etag) {
-                    continue;
+                if (event->hasRecurrenceId()) {
+                    exceptions.append(event);
+                } else if (!master) {
+                    master = event;
                 }
-
-                const Event::Ptr existing = target->calendar->event(uid);
-                if (existing) {
-                    target->calendar->deleteEvent(existing);
-                }
-                target->calendar->addEvent(Event::Ptr(event->clone()));
-                target->syncItems.insert(uid, qMakePair(remote.href, remote.etag));
             }
+
+            if (!master) {
+                continue;
+            }
+
+            const QString uid = master->uid();
+            remoteUids.insert(uid);
+
+            const auto syncIt = target->syncItems.constFind(uid);
+            if (syncIt != target->syncItems.constEnd() && syncIt.value().second == remote.etag) {
+                continue;
+            }
+
+            if (target->pendingPush.contains(uid)) {
+                // Local edit not pushed yet: keep our local copy, retry the push below.
+                continue;
+            }
+
+            const Event::Ptr existing = target->calendar->event(uid);
+            if (existing) {
+                target->calendar->deleteEventInstances(existing);
+                target->calendar->deleteEvent(existing);
+            }
+            target->calendar->addEvent(Event::Ptr(master->clone()));
+            for (const Event::Ptr &exception : exceptions) {
+                target->calendar->addEvent(Event::Ptr(exception->clone()));
+            }
+            target->syncItems.insert(uid, qMakePair(remote.href, remote.etag));
         }
 
         // Events that disappeared from the server are removed locally too.
@@ -1003,6 +1090,7 @@ void CalendarManager::syncCalDavCalendar(LocalCalendar &entry)
             }
             const Event::Ptr existing = target->calendar->event(uid);
             if (existing) {
+                target->calendar->deleteEventInstances(existing);
                 target->calendar->deleteEvent(existing);
             }
             target->syncItems.remove(uid);
@@ -1013,6 +1101,8 @@ void CalendarManager::syncCalDavCalendar(LocalCalendar &entry)
 
         Q_EMIT calendarChanged();
         Q_EMIT syncFinished(calendarId);
+
+        retryPendingPushes(*target);
     });
 
     client->fetchEvents(remoteUrl, username, password);
@@ -1061,15 +1151,21 @@ void CalendarManager::syncGoogleCalendar(LocalCalendar &entry, bool forceFullRes
                     return;
                 }
 
+                // Pass 1: master/regular events (no recurringEventId).
                 for (const GoogleCalendarClient::RemoteEvent &remote : events) {
-                    // Recurring-event exceptions are not yet handled by sync (v1 limitation).
                     if (remote.json.contains(QStringLiteral("recurringEventId"))) {
+                        continue;
+                    }
+
+                    if (target->pendingPush.contains(remote.id)) {
+                        // Local edit not pushed yet: keep our local copy, retry the push below.
                         continue;
                     }
 
                     if (remote.json.value(QStringLiteral("status")).toString() == QLatin1String("cancelled")) {
                         const Event::Ptr existing = target->calendar->event(remote.id);
                         if (existing) {
+                            target->calendar->deleteEventInstances(existing);
                             target->calendar->deleteEvent(existing);
                         }
                         target->syncItems.remove(remote.id);
@@ -1085,12 +1181,51 @@ void CalendarManager::syncGoogleCalendar(LocalCalendar &entry, bool forceFullRes
                     target->syncItems.insert(event->uid(), qMakePair(event->uid(), remote.etag));
                 }
 
+                // Pass 2: recurrence exception instances (override or cancellation of a
+                // single occurrence of a recurring event).
+                for (const GoogleCalendarClient::RemoteEvent &remote : events) {
+                    if (!remote.json.contains(QStringLiteral("recurringEventId"))) {
+                        continue;
+                    }
+
+                    const QString masterUid = remote.json.value(QStringLiteral("recurringEventId")).toString();
+                    const QDateTime recurrenceId = googleOriginalStartTime(remote.json);
+                    const QString key = masterUid + QLatin1Char('#') + recurrenceId.toString(Qt::ISODate);
+
+                    if (target->pendingPush.contains(key)) {
+                        continue;
+                    }
+
+                    const Event::Ptr existingException = target->calendar->event(masterUid, recurrenceId);
+
+                    if (remote.json.value(QStringLiteral("status")).toString() == QLatin1String("cancelled")) {
+                        // The occurrence was removed from the series: exclude it via EXDATE.
+                        const Event::Ptr master = target->calendar->event(masterUid);
+                        if (master) {
+                            master->recurrence()->addExDateTime(recurrenceId);
+                        }
+                        if (existingException) {
+                            target->calendar->deleteEvent(existingException);
+                        }
+                        target->syncItems.remove(key);
+                        continue;
+                    }
+
+                    if (existingException) {
+                        target->calendar->deleteEvent(existingException);
+                    }
+                    target->calendar->addEvent(googleJsonToExceptionEvent(remote.json));
+                    target->syncItems.insert(key, qMakePair(remote.id, remote.etag));
+                }
+
                 target->syncToken = nextSyncToken;
                 target->storage->save();
                 saveSyncState(*target);
 
                 Q_EMIT calendarChanged();
                 Q_EMIT syncFinished(calendarId);
+
+                retryPendingPushes(*target);
             });
 
     client->fetchEvents(refreshToken, remoteCalendarId, syncToken);
@@ -1134,6 +1269,7 @@ QString CalendarManager::addEvent(const QString &calendarId,
     entry->storage->save();
     Q_EMIT calendarChanged();
 
+    markPendingPush(*entry, event->uid());
     pushEvent(*entry, event);
 
     return event->uid();
@@ -1162,6 +1298,7 @@ bool CalendarManager::updateEvent(const QString &uid,
     entry->storage->save();
     Q_EMIT calendarChanged();
 
+    markPendingPush(*entry, event->uid());
     pushEvent(*entry, event);
 
     return true;
@@ -1253,6 +1390,7 @@ bool CalendarManager::rescheduleEvent(const QString &uid, qint64 secondsDelta)
     entry->storage->save();
     Q_EMIT calendarChanged();
 
+    markPendingPush(*entry, event->uid());
     pushEvent(*entry, event);
 
     return true;
@@ -1285,6 +1423,7 @@ bool CalendarManager::moveEventToCalendar(const QString &uid, const QString &cal
     target->storage->save();
     Q_EMIT calendarChanged();
 
+    markPendingPush(*target, clone->uid());
     pushEvent(*target, clone);
 
     return true;

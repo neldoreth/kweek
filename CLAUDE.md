@@ -71,15 +71,33 @@ Modelo de datos de eventos implementado sobre KCalendarCore:
     `fetchEvents`; por cada evento remoto compara `etag` con el guardado, si
     cambió reemplaza el evento local (clon) y actualiza `syncItems`; los UID
     conocidos que ya no aparecen en remoto se borran localmente. Emite
-    `syncStarted`/`syncFinished`/`syncError(calendarId, error)`. **Limitación
-    v1**: las excepciones de recurrencia (`RECURRENCE-ID`) del servidor se
-    ignoran al sincronizar.
+    `syncStarted`/`syncFinished`/`syncError(calendarId, error)`.
+    **Excepciones de recurrencia**: un recurso `.ics` puede contener el VEVENT
+    maestro más sus VEVENT `RECURRENCE-ID` (instancias modificadas de una
+    serie recurrente); ahora se procesan todas: el maestro se trata como
+    antes (clon, `syncItems` por uid) y cada excepción se clona y se añade al
+    `MemoryCalendar` con el mismo uid + `recurrenceId()`. Si el recurso
+    cambia de etag o desaparece, se borran también las instancias existentes
+    vía `Calendar::deleteEventInstances()`. `OccurrenceIterator` (usado por
+    `EventListModel`) sustituye automáticamente la ocurrencia correspondiente
+    por la excepción, sin cambios en `eventlistmodel.cpp`.
   - Push-on-edit: `addEvent`/`updateEvent`/`rescheduleEvent`/
     `moveEventToCalendar` llaman a `pushEvent` (serializa con `ICalFormat` y
     hace PUT, actualizando `syncItems`) y `removeEvent`/`moveEventToCalendar`
     (en el calendario origen) llaman a `pushDelete` (DELETE remoto) para
     calendarios tipo "caldav". Sincronización v1 = "last write wins", sin UI
-    de resolución de conflictos.
+    de resolución de conflictos. **Edición de instancias individuales de una
+    serie recurrente desde Kweek no está soportada** (el diálogo de edición
+    opera sobre el evento maestro vía uid).
+  - **Pending-push / reintentos** (`LocalCalendar::pendingPush`, persistido
+    en `.../calendars/<id>.sync.json` como array `pendingPush`): al editar,
+    crear, posponer o mover un evento de un calendario "caldav"/"google", su
+    uid se marca como pendiente (`markPendingPush`) antes de `pushEvent`; se
+    desmarca al recibir confirmación del servidor (`eventPut`). Si el push
+    falla, el uid queda pendiente: el siguiente `syncCalendar`/`syncAll`
+    **no sobrescribe esa entrada local con la versión remota** (evita perder
+    la edición local por una sincronización en segundo plano) y, al terminar
+    el pull, `retryPendingPushes()` reintenta el push automáticamente.
   - `src/qml/AddCalDavAccountDialog.qml` — diálogo (Kirigami.Dialog) con
     presets de proveedor (iCloud/Fastmail/Nextcloud/Custom), campos de
     servidor/usuario/contraseña de aplicación, indicador de progreso y
@@ -139,8 +157,24 @@ Modelo de datos de eventos implementado sobre KCalendarCore:
     según `type`. `syncGoogleCalendar` usa `syncToken` para pull
     incremental; eventos `status: "cancelled"` se borran localmente; al
     recibir `syncTokenInvalid` limpia `syncToken`+`syncItems` y repite con
-    resync completo. **Limitación v1** (igual que CalDAV): instancias de
-    excepción (`recurringEventId`) se ignoran.
+    resync completo.
+    **Excepciones de recurrencia**: los items con `recurringEventId` (instancia
+    modificada/cancelada de una serie) se procesan en una segunda pasada
+    (tras procesar maestros/eventos normales, para que el maestro ya esté en
+    el `MemoryCalendar` si llega en el mismo lote). `googleJsonToExceptionEvent()`
+    construye el evento de excepción reutilizando `googleJsonToEvent()`, le
+    asigna `uid = recurringEventId` (mismo uid que el maestro) y
+    `recurrenceId` a partir de `originalStartTime` (helper
+    `googleOriginalStartTime()`); se guarda con clave compuesta
+    `uid#recurrenceIdISO` en `syncItems` (valor = `{googleEventId, etag}`).
+    Si el item viene con `status: "cancelled"`, en vez de añadir una
+    excepción se llama a `master->recurrence()->addExDateTime(recurrenceId)`
+    sobre el evento maestro (si existe localmente), excluyendo esa ocurrencia
+    de la serie (equivalente a `EXDATE`). **Limitación v1 restante**: si una
+    excepción conocida desaparece de remoto sin llegar como `cancelled`
+    (p.ej. al "deshacer" la modificación de una instancia), no se borra
+    localmente; y editar/mover/borrar una instancia individual desde Kweek no
+    está soportado (ver nota en la sección CalDAV).
   - `pushEvent`/`pushDelete` ganan rama `type == "google"`: al crear un
     evento, Google asigna su propio id y el UID local se renombra para que
     coincida (clonando el evento con el nuevo UID).
@@ -265,17 +299,23 @@ comparando recuento de eventos vía API de Google con paginación contra
   tenía el mismo bug de paginación que "Oscar Privado" (250 locales vs 386 en
   Google). Corregido con el mismo procedimiento de resync completo; verificado
   386/386 tras el resync.
-- "ivanbernabeuperez@gmail.com" tiene 30 eventos locales vs 31 en Google; el
-  evento que falta es una **excepción de recurrencia** (`recurringEventId`
-  presente), lo cual coincide con la limitación v1 ya documentada (las
-  excepciones de recurrencia del servidor se ignoran al sincronizar). No es un
-  bug nuevo, no requiere acción.
+- "ivanbernabeuperez@gmail.com" tenía 30 eventos locales vs 31 en Google; el
+  evento que faltaba era una **excepción de recurrencia** (`recurringEventId`
+  presente, instancia "Revisar Mac de VCS" del 2022-03-22 con
+  `RECURRENCE-ID`). Tras implementar el soporte de excepciones (ver sección
+  Google Calendar arriba) y forzar un resync completo, ahora son 31/31:
+  verificado end-to-end, incluyendo el `RECURRENCE-ID`/`UID` correcto en el
+  `.ics` resultante y la clave compuesta `uid#recurrenceIdISO` en
+  `.sync.json`.
 - "Cine y TV" (106/106) y "Familia" (15/15) coinciden exactamente con Google,
   sin problemas.
 - Con esto, los 7 calendarios Google de la cuenta (Festivos en España,
   ivanbernabeuperez@gmail.com, mari.filiu@gmail.com, Cine y TV, Niños, Oscar
-  Privado, Familia) están verificados como correctos, salvo la limitación v1
-  conocida de excepciones de recurrencia.
+  Privado, Familia) están verificados como correctos. Sigue pendiente probar
+  el caso de una instancia **cancelada** (`status: "cancelled"` +
+  `recurringEventId`, que se traduce en `EXDATE` sobre el maestro) con un
+  evento real, y el reintento automático de `pendingPush` tras un push
+  fallido (ver sección Google Calendar).
 
 **Sync incremental con `syncToken` — verificado end-to-end** (2026-06-13,
 cuenta real, calendario "Cine y TV"): usando un harness temporal
@@ -351,8 +391,21 @@ Esta prueba destapó **un bug real en `CredentialStore`** (ya corregido en
 Con esto, la integración Google Calendar queda completamente verificada
 end-to-end (login, descubrimiento, sync inicial con paginación, sync
 incremental con `syncToken` + fallback por token caducado, push/borrado de
-eventos individuales y borrado de cuenta). Pendiente: resolución de
-conflictos y excepciones de recurrencia (limitación v1 conocida).
+eventos individuales y borrado de cuenta).
+
+**Excepciones de recurrencia y pending-push — implementado (2026-06-13)**:
+ver detalles en las secciones CalDAV y Google Calendar arriba
+(`googleJsonToExceptionEvent`/`googleOriginalStartTime`, manejo de
+`RECURRENCE-ID`/`recurringEventId`/`EXDATE`, y
+`LocalCalendar::pendingPush`/`markPendingPush`/`retryPendingPushes`).
+Verificado end-to-end con la cuenta real: resync completo de
+"ivanbernabeuperez@gmail.com" pasa de 30/31 a 31/31 eventos, con la
+excepción correctamente serializada (`RECURRENCE-ID`, mismo `UID` que el
+maestro) y registrada en `.sync.json` con clave compuesta
+`uid#recurrenceIdISO`. Pendiente: probar con un evento real el caso
+"instancia cancelada" (`EXDATE` sobre el maestro) y el reintento de
+`pendingPush` tras un push fallido (la lógica existe y compila, pero no se
+ha forzado un fallo de red real para verla en acción).
 
 Nota de CMake: fue necesario añadir `target_include_directories(kweek
 PRIVATE core)` para que la generación automática de `qmltyperegistrations`
@@ -536,8 +589,15 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 - [ ] Integración Microsoft Graph (personal + 365/trabajo)
 - [x] Gestión de múltiples cuentas, KWallet (cuentas CalDAV; credenciales en
       KWallet vía `CredentialStore`)
-- [ ] Sincronización bidireccional con resolución de conflictos (v1 = last
-      write wins; excepciones de recurrencia remotas no soportadas aún)
+- [x] Excepciones de recurrencia remotas (`RECURRENCE-ID`/`recurringEventId`)
+      ahora se sincronizan (pull) y se muestran correctamente vía
+      `OccurrenceIterator`; editar instancias individuales desde Kweek sigue
+      sin estar soportado (ver "Verificado")
+- [x] Reintento de pushes fallidos (`pendingPush`): un push fallido ya no se
+      pierde silenciosamente — se reintenta en cada sync y protege la edición
+      local de ser sobrescrita por el pull mientras esté pendiente (last
+      write wins sigue siendo la estrategia base; sin UI de resolución de
+      conflictos)
 
 ### Fase 3 — Extras
 - [ ] Widget de tiempo (Open-Meteo / AEMET, selección de ciudad)
@@ -558,7 +618,10 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 - Nombre definitivo de la aplicación.
 - ¿AEMET además de Open-Meteo, o solo Open-Meteo para simplificar?
 - ¿Soporte de tareas/to-dos además de eventos (como BusyCal)?
-- Estrategia exacta de resolución de conflictos de sincronización.
+- Estrategia exacta de resolución de conflictos de sincronización: v1 sigue
+  siendo "last write wins" + reintento de `pendingPush` (ver "Verificado");
+  pendiente decidir si hace falta una UI de conflictos para casos donde el
+  reintento automático falle repetidamente.
 - **Integración Google Calendar**: implementada y verificada end-to-end con
   cuenta real (ver "Estado actual" y "Verificado"). Las credenciales OAuth
   reales se guardan en `src/core/googleoauthconfig.h` (gitignored, **no se
