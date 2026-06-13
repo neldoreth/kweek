@@ -51,6 +51,16 @@ void GoogleCalendarClient::authenticate()
         QDesktopServices::openUrl(url);
     });
 
+    connect(m_flow, &QAbstractOAuth2::serverReportedErrorOccurred, this, [this](const QString &error, const QString &errorDescription, const QUrl &uri) {
+        qWarning() << "GoogleCalendarClient: OAuth error" << error << errorDescription << uri;
+        Q_EMIT authenticated(QString(), QString(), error + QStringLiteral(": ") + errorDescription);
+    });
+
+    connect(m_flow, &QAbstractOAuth::requestFailed, this, [this](QAbstractOAuth::Error error) {
+        qWarning() << "GoogleCalendarClient: OAuth request failed" << static_cast<int>(error);
+        Q_EMIT authenticated(QString(), QString(), QStringLiteral("OAuth request failed (%1)").arg(static_cast<int>(error)));
+    });
+
     connect(m_flow, &QOAuth2AuthorizationCodeFlow::granted, this, [this]() {
         const QString refreshToken = m_flow->refreshToken();
         const QString accessToken = m_flow->token();

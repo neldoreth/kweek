@@ -104,7 +104,12 @@ Modelo de datos de eventos implementado sobre KCalendarCore:
     `access_type=offline`+`prompt=consent` para forzar `refresh_token`, y
     scopes `calendar`+`email`; al recibir `granted()` consulta
     `userinfo` para el email y emite `authenticated(refreshToken, email,
-    error)`. El resto de operaciones (`listCalendars`, `fetchEvents`,
+    error)`. También conecta `QAbstractOAuth2::serverReportedErrorOccurred` y
+    `QAbstractOAuth::requestFailed` para reportar como error cualquier fallo
+    del flujo OAuth2 (p.ej. `invalid_client` por client secret incorrecto, o
+    403 por tener la Google Calendar API deshabilitada en el proyecto de
+    Google Cloud) en lugar de quedarse bloqueado en "Connecting…" sin
+    feedback. El resto de operaciones (`listCalendars`, `fetchEvents`,
     `putEvent`, `deleteEvent`) cambian el `refreshToken` por un access token
     fresco vía `POST /token` antes de cada llamada (`withAccessToken`).
     `fetchEvents(calendarId, syncToken)` usa `singleEvents=false`; un 410
@@ -191,13 +196,32 @@ una sincronización real contra iCloud/Nextcloud/Fastmail en este entorno (sin
 credenciales); pendiente de verificación manual con una cuenta real
 (descubrimiento de calendarios, pull/push de eventos, borrado de cuenta).
 
-Google Calendar: build limpio con la nueva dependencia `Qt6::NetworkAuth` y
-smoke test offscreen sin errores QML. No se ha podido probar el flujo OAuth2
-interactivo (login en navegador) ni llamadas reales a la API de Google
-Calendar en este entorno (sin navegador/credenciales de usuario); pendiente
-de verificación manual con una cuenta real (login, descubrimiento de
-calendarios, sync inicial e incremental, pull/push/borrado de eventos,
-borrado de cuenta).
+Google Calendar: **verificado end-to-end con una cuenta real**
+(neldoreth@gmail.com). Login interactivo vía navegador (Firefox) con el flujo
+PKCE completo, descubrimiento automático de las 7 cuentas/calendarios de
+Google del usuario (incl. "Festivos en España" y varios calendarios
+compartidos/de familia), creación de un `LocalCalendar` tipo "google" por
+cada uno y sync inicial completo (eventos reales descargados a sus `.ics` +
+`.sync.json` correspondientes), todo sin errores. Notas del proceso:
+
+- El client ID/secret de OAuth2 deben pertenecer a un proyecto de Google
+  Cloud con la **Google Calendar API habilitada** (Biblioteca de APIs); si no
+  lo está, `listCalendars` falla con HTTP 403
+  (`accessNotConfigured`/`PERMISSION_DENIED`).
+- Mientras la pantalla de consentimiento OAuth esté en modo "Testing", solo
+  pueden iniciar sesión los correos añadidos como "Usuarios de prueba" (si
+  no, Google devuelve "Error 403: access_denied" antes de llegar a la
+  pantalla de permisos).
+- Un `client_secret` incorrecto produce `invalid_client` (HTTP 401) en el
+  intercambio del código por el token; Qt lo reporta como
+  `QNetworkReply::AuthenticationRequiredError` ("server requires
+  authentication") — de ahí las señales `serverReportedErrorOccurred`/
+  `requestFailed` añadidas a `GoogleCalendarClient::authenticate()` para que
+  esto se vea en el diálogo en lugar de quedarse en "Connecting…".
+
+Pendiente: probar pull/push/borrado de eventos individuales y sync
+incremental (segunda sincronización con `syncToken`) con esta cuenta, y
+borrado de cuenta.
 
 Nota de CMake: fue necesario añadir `target_include_directories(kweek
 PRIVATE core)` para que la generación automática de `qmltyperegistrations`
@@ -374,8 +398,9 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 ### Fase 2 — Sincronización en la nube
 - [x] Soporte CalDAV genérico (incl. Apple/iCloud, Nextcloud, Fastmail) —
       descubrimiento, pull y push de eventos; ver detalles arriba
-- [x] Integración Google Calendar (OAuth2 + API) — implementada, pendiente
-      de verificación manual con cuenta real (ver "Verificado")
+- [x] Integración Google Calendar (OAuth2 + API) — verificada end-to-end con
+      cuenta real (login, descubrimiento y sync inicial); pendiente probar
+      sync incremental y push/borrado individual (ver "Verificado")
 - [ ] Integración Microsoft Graph (personal + 365/trabajo)
 - [x] Gestión de múltiples cuentas, KWallet (cuentas CalDAV; credenciales en
       KWallet vía `CredentialStore`)
@@ -402,9 +427,11 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 - ¿AEMET además de Open-Meteo, o solo Open-Meteo para simplificar?
 - ¿Soporte de tareas/to-dos además de eventos (como BusyCal)?
 - Estrategia exacta de resolución de conflictos de sincronización.
-- **Integración Google Calendar**: implementada (ver "Estado actual" y
-  "Verificado"). Las credenciales OAuth reales se guardan en
-  `src/core/googleoauthconfig.h` (gitignored, **no se sube a GitHub** por ser
-  un repo público); hay un `src/core/googleoauthconfig.h.example` committeado
-  como plantilla con instrucciones. Pendiente: verificación manual con una
-  cuenta real (login interactivo, sync inicial/incremental, conflictos).
+- **Integración Google Calendar**: implementada y verificada end-to-end con
+  cuenta real (ver "Estado actual" y "Verificado"). Las credenciales OAuth
+  reales se guardan en `src/core/googleoauthconfig.h` (gitignored, **no se
+  sube a GitHub** por ser un repo público); hay un
+  `src/core/googleoauthconfig.h.example` committeado como plantilla con
+  instrucciones. Pendiente: sync incremental (segunda pasada con
+  `syncToken`), push/borrado de eventos individuales, borrado de cuenta y
+  resolución de conflictos.
