@@ -230,9 +230,8 @@ cada uno y sync inicial completo (eventos reales descargados a sus `.ics` +
   `requestFailed` añadidas a `GoogleCalendarClient::authenticate()` para que
   esto se vea en el diálogo en lugar de quedarse en "Connecting…".
 
-Pendiente: probar pull/push/borrado de eventos individuales y sync
-incremental (segunda sincronización con `syncToken`) con esta cuenta, y
-borrado de cuenta.
+Sync incremental con `syncToken`, push/borrado de eventos individuales y
+borrado de cuenta ya verificados, ver más abajo.
 
 **Fixes post-verificación (mismo día, misma cuenta real)**:
 
@@ -277,6 +276,83 @@ comparando recuento de eventos vía API de Google con paginación contra
   ivanbernabeuperez@gmail.com, mari.filiu@gmail.com, Cine y TV, Niños, Oscar
   Privado, Familia) están verificados como correctos, salvo la limitación v1
   conocida de excepciones de recurrencia.
+
+**Sync incremental con `syncToken` — verificado end-to-end** (2026-06-13,
+cuenta real, calendario "Cine y TV"): usando un harness temporal
+(`--sync-test <calendarId>` en `main.cpp`, revertido tras la prueba) que
+llama directamente a `syncCalendar()` y un `qWarning` temporal con el
+resultado de `eventsFetched`:
+
+- Sync sin cambios: `events: 0`, `syncTokenInvalid: false`, `nextSyncToken`
+  idéntico al guardado (no se re-descargan los eventos existentes).
+- `syncTokenInvalid: true` (token guardado caducado, camino que antes no se
+  había probado): se limpia `syncToken`+`syncItems` y se repite con resync
+  completo automáticamente; tras el resync se guarda un `syncToken` nuevo.
+- Evento añadido en Google -> tras el resync completo aparece en el `.ics`
+  local (106 -> 107 eventos).
+- Evento borrado en Google -> la siguiente sync incremental devuelve
+  `events: 1` con `status: cancelled`; el evento se borra del `.ics` local
+  (107 -> 106) y se guarda un `syncToken` nuevo.
+
+Con esto, sync incremental (incl. el fallback por token caducado, alta y baja
+de eventos) queda verificado.
+
+**Push/borrado de eventos individuales (Kweek -> Google) — verificado
+end-to-end** (2026-06-13, cuenta real, calendario "Cine y TV"): usando un
+harness temporal (`--push-test create|update|delete <calendarId> [uid]` en
+`main.cpp`, revertido tras la prueba) que llama directamente a
+`addEvent`/`updateEvent`/`removeEvent`:
+
+- **Crear**: `addEvent()` crea el evento local, `pushEvent()` hace `PUT` a
+  Google (sin `googleEventId` -> Google asigna uno nuevo), y el UID local se
+  renombra al id devuelto por Google (`eventPut` con `eventId` distinto del
+  `uid` original). Verificado con `get_event` en Google: evento creado con el
+  resumen/descripción/horario correctos.
+- **Actualizar**: `updateEvent()` + `pushEvent()` hace `PUT` con el
+  `googleEventId` ya conocido (de `syncItems`) y guarda el `etag` nuevo.
+  Verificado: el `summary` cambia en Google y `updated` se actualiza.
+- **Borrar**: `removeEvent()` + `pushDelete()` hace `DELETE` en Google y quita
+  la entrada de `syncItems`. Verificado: `get_event` devuelve `status:
+  cancelled`.
+
+**Borrado de cuenta Google — verificado** (2026-06-13): `removeCalendar()`
+ya gestiona el caso CalDAV/Google de forma genérica (ver código): si al
+borrar un calendario era el último de su `accountId`, borra también el
+`Account` de `accounts.json` y llama a
+`CredentialStore::removeCredentials(accountId)`. Para verificarlo sin tocar
+la cuenta real (que tiene 7 calendarios y borrarlos todos sería
+destructivo/no reversible sin volver a hacer login+resync completo), se usó
+un entorno aislado (`XDG_DATA_HOME` apuntando a un directorio temporal, más
+un harness temporal `--account-delete-test` en `main.cpp`, todo revertido
+tras la prueba) con un `calendars.json`/`accounts.json` ficticios (un
+calendario "Personal" local + un calendario `type: "google"` con
+`accountId: "test-google-account-id"`, y credenciales falsas guardadas vía
+`storeGoogleTokens`). Resultado tras `removeCalendar("test-google-cal-1")`:
+calendario y `.ics`/`.sync.json` eliminados, entrada de `accounts.json`
+eliminada, y credenciales borradas de KWallet.
+
+Esta prueba destapó **un bug real en `CredentialStore`** (ya corregido en
+`src/core/credentialstore.cpp`):
+
+- `readMap()` no comprobaba `wallet->hasEntry(key)` antes de llamar a
+  `wallet->readMap()`; KWallet devuelve `0` (éxito) con un mapa vacío incluso
+  para una entrada inexistente, por lo que `readCredentials`/
+  `readGoogleTokens` devolvían `true` con `username`/`password` o
+  `email`/`refreshToken` vacíos para una cuenta ya borrada (o nunca
+  existente) en lugar de `false`. Corregido añadiendo la comprobación
+  `hasEntry()`.
+- `removeCredentials()` no llamaba a `wallet->sync()`: `removeEntry()`
+  surtía efecto en la conexión KWallet en curso (`hasEntry()` ya devolvía
+  `false` inmediatamente después), pero sin `sync()` el cambio no se
+  persistía antes de cerrar la conexión, y una `openWallet()` posterior
+  (p.ej. al comprobar credenciales) volvía a ver la entrada "borrada".
+  Corregido añadiendo `wallet->sync()` tras `removeEntry()`.
+
+Con esto, la integración Google Calendar queda completamente verificada
+end-to-end (login, descubrimiento, sync inicial con paginación, sync
+incremental con `syncToken` + fallback por token caducado, push/borrado de
+eventos individuales y borrado de cuenta). Pendiente: resolución de
+conflictos y excepciones de recurrencia (limitación v1 conocida).
 
 Nota de CMake: fue necesario añadir `target_include_directories(kweek
 PRIVATE core)` para que la generación automática de `qmltyperegistrations`
@@ -453,9 +529,10 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
 ### Fase 2 — Sincronización en la nube
 - [x] Soporte CalDAV genérico (incl. Apple/iCloud, Nextcloud, Fastmail) —
       descubrimiento, pull y push de eventos; ver detalles arriba
-- [x] Integración Google Calendar (OAuth2 + API) — verificada end-to-end con
-      cuenta real (login, descubrimiento y sync inicial); pendiente probar
-      sync incremental y push/borrado individual (ver "Verificado")
+- [x] Integración Google Calendar (OAuth2 + API) — verificada end-to-end:
+      login, descubrimiento, sync inicial, sync incremental con `syncToken`,
+      push/borrado individual de eventos y borrado de cuenta (ver
+      "Verificado")
 - [ ] Integración Microsoft Graph (personal + 365/trabajo)
 - [x] Gestión de múltiples cuentas, KWallet (cuentas CalDAV; credenciales en
       KWallet vía `CredentialStore`)
@@ -487,6 +564,7 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
   reales se guardan en `src/core/googleoauthconfig.h` (gitignored, **no se
   sube a GitHub** por ser un repo público); hay un
   `src/core/googleoauthconfig.h.example` committeado como plantilla con
-  instrucciones. Pendiente: sync incremental (segunda pasada con
-  `syncToken`), push/borrado de eventos individuales, borrado de cuenta y
-  resolución de conflictos.
+  instrucciones. Sync incremental con `syncToken` (incl. fallback por token
+  caducado), push/borrado de eventos individuales y borrado de cuenta ya
+  verificados end-to-end. Pendiente: resolución de conflictos y excepciones
+  de recurrencia (limitación v1 conocida).

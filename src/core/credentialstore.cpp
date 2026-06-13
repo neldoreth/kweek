@@ -38,6 +38,11 @@ bool readMap(const QString &key, QMap<QString, QString> &map)
     }
     wallet->setFolder(kFolder);
 
+    if (!wallet->hasEntry(key)) {
+        delete wallet;
+        return false;
+    }
+
     const int result = wallet->readMap(key, map);
     delete wallet;
     return result == 0;
@@ -95,6 +100,7 @@ bool CredentialStore::removeCredentials(const QString &accountId)
     if (wallet->hasFolder(kFolder)) {
         wallet->setFolder(kFolder);
         wallet->removeEntry(accountId);
+        wallet->sync();
     }
     delete wallet;
     return true;
