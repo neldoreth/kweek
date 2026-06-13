@@ -741,6 +741,17 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
       conflictos)
 
 ### Fase 3 — Extras
+
+**Próxima tarea (en curso de planificación)**: widget de tiempo con
+Open-Meteo (sin API key), desactivado por defecto, configurable desde una
+nueva página de Ajustes (no existe todavía); incluye un nuevo singleton
+`WeatherManager` (geocoding + forecast diario, persistencia en
+`weather.json`), `src/qml/SettingsPage.qml`, `src/qml/WeatherUtils.js`
+(mapeo de códigos WMO a iconos Breeze `weather-*`) y la integración del
+icono+temperatura en las cabeceras de `WeekView.qml`/`DayView.qml`. AEMET
+queda fuera de esta pasada. Plan detallado guardado en
+`/home/oscar/.claude/plans/enumerated-imagining-dusk.md`.
+
 - [ ] Widget de tiempo (Open-Meteo / AEMET, selección de ciudad)
 - [ ] Detección de enlaces de videollamada
 - [ ] Búsqueda de eventos
