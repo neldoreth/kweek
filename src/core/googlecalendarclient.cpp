@@ -158,42 +158,55 @@ void GoogleCalendarClient::fetchEvents(const QString &refreshToken, const QStrin
             return;
         }
 
-        QUrl url(QString::fromLatin1(kCalendarApiBase) + QStringLiteral("/calendars/") + QString::fromUtf8(QUrl::toPercentEncoding(calendarId)) + QStringLiteral("/events"));
-        QUrlQuery query;
-        query.addQueryItem(QStringLiteral("singleEvents"), QStringLiteral("false"));
-        if (!syncToken.isEmpty()) {
-            query.addQueryItem(QStringLiteral("syncToken"), syncToken);
-        }
-        url.setQuery(query);
+        fetchEventsPage(accessToken, calendarId, syncToken, QString(), {});
+    });
+}
 
-        QNetworkRequest request(url);
-        request.setRawHeader("Authorization", "Bearer " + accessToken.toUtf8());
+void GoogleCalendarClient::fetchEventsPage(const QString &accessToken, const QString &calendarId, const QString &syncToken, const QString &pageToken, QList<RemoteEvent> accumulated)
+{
+    QUrl url(QString::fromLatin1(kCalendarApiBase) + QStringLiteral("/calendars/") + QString::fromUtf8(QUrl::toPercentEncoding(calendarId)) + QStringLiteral("/events"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("singleEvents"), QStringLiteral("false"));
+    if (!syncToken.isEmpty()) {
+        query.addQueryItem(QStringLiteral("syncToken"), syncToken);
+    }
+    if (!pageToken.isEmpty()) {
+        query.addQueryItem(QStringLiteral("pageToken"), pageToken);
+    }
+    url.setQuery(query);
 
-        QNetworkReply *reply = m_nam->get(request);
-        connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-            reply->deleteLater();
-            if (reply->error() != QNetworkReply::NoError) {
-                if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == kGoneStatus) {
-                    Q_EMIT eventsFetched({}, QString(), true, QString());
-                    return;
-                }
-                Q_EMIT eventsFetched({}, QString(), false, reply->errorString());
+    QNetworkRequest request(url);
+    request.setRawHeader("Authorization", "Bearer " + accessToken.toUtf8());
+
+    QNetworkReply *reply = m_nam->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, accessToken, calendarId, syncToken, accumulated]() mutable {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == kGoneStatus) {
+                Q_EMIT eventsFetched({}, QString(), true, QString());
                 return;
             }
+            Q_EMIT eventsFetched({}, QString(), false, reply->errorString());
+            return;
+        }
 
-            const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
-            QList<RemoteEvent> events;
-            for (const QJsonValue &value : obj.value(QStringLiteral("items")).toArray()) {
-                const QJsonObject item = value.toObject();
-                RemoteEvent ev;
-                ev.id = item.value(QStringLiteral("id")).toString();
-                ev.etag = item.value(QStringLiteral("etag")).toString();
-                ev.json = item;
-                events.append(ev);
-            }
+        const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+        for (const QJsonValue &value : obj.value(QStringLiteral("items")).toArray()) {
+            const QJsonObject item = value.toObject();
+            RemoteEvent ev;
+            ev.id = item.value(QStringLiteral("id")).toString();
+            ev.etag = item.value(QStringLiteral("etag")).toString();
+            ev.json = item;
+            accumulated.append(ev);
+        }
 
-            Q_EMIT eventsFetched(events, obj.value(QStringLiteral("nextSyncToken")).toString(), false, QString());
-        });
+        const QString nextPageToken = obj.value(QStringLiteral("nextPageToken")).toString();
+        if (!nextPageToken.isEmpty()) {
+            fetchEventsPage(accessToken, calendarId, syncToken, nextPageToken, accumulated);
+            return;
+        }
+
+        Q_EMIT eventsFetched(accumulated, obj.value(QStringLiteral("nextSyncToken")).toString(), false, QString());
     });
 }
 

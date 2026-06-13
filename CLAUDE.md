@@ -114,12 +114,23 @@ Modelo de datos de eventos implementado sobre KCalendarCore:
     fresco vía `POST /token` antes de cada llamada (`withAccessToken`).
     `fetchEvents(calendarId, syncToken)` usa `singleEvents=false`; un 410
     (syncToken inválido) se reporta como `syncTokenInvalid=true` para forzar
-    resync completo.
+    resync completo. Pagina automáticamente vía `fetchEventsPage()`
+    (recursiva, sigue `nextPageToken` acumulando resultados) hasta que la
+    respuesta no tenga `nextPageToken`, momento en el que se usa su
+    `nextSyncToken`; necesario porque Google devuelve como máximo 250 eventos
+    por página y calendarios grandes (p.ej. "Oscar Privado", >250 eventos)
+    perdían silenciosamente los eventos de páginas siguientes (incl. eventos
+    futuros) antes de este fix.
   - Mapeo evento <-> JSON de Google: `googleJsonToEvent()`/
     `eventToGoogleJson()` en `calendarmanager.cpp` (summary, description,
     location, start/end con `date` todo el día o `dateTime`+`timeZone`,
     `transparency` opaque/transparent <-> busy/free, `recurrence:
-    ["RRULE:FREQ=..."]` simple, `reminders.overrides` <-> alarma Display).
+    ["RRULE:FREQ=..."]` simple con soporte de `UNTIL`/`COUNT` (helpers
+    `rruleUntil()`/`rruleCount()`, aplicados vía
+    `Recurrence::setEndDateTime()`/`setDuration()`; antes se descartaban,
+    convirtiendo eventos recurrentes finitos de Google en recurrencias
+    infinitas que aparecían también "hoy"), `reminders.overrides` <-> alarma
+    Display).
   - `CalendarManager::addGoogleAccount()`: autentica vía navegador, guarda
     tokens, hace `listCalendars` y crea un `LocalCalendar` tipo "google" por
     calendario descubierto, lanzando `syncCalendar` inicial. Emite
@@ -222,6 +233,30 @@ cada uno y sync inicial completo (eventos reales descargados a sus `.ics` +
 Pendiente: probar pull/push/borrado de eventos individuales y sync
 incremental (segunda sincronización con `syncToken`) con esta cuenta, y
 borrado de cuenta.
+
+**Fixes post-verificación (mismo día, misma cuenta real)**:
+
+- Eventos recurrentes finitos de Google (p.ej. `RRULE:FREQ=WEEKLY;UNTIL=...`
+  o `;COUNT=...`) se importaban como recurrencia infinita (`FREQ=WEEKLY` sin
+  fin), por lo que aparecían también "hoy" años después de haber terminado
+  (detectado con eventos reales de 2013/2022/2023 apareciendo en junio de
+  2026). Corregido en `googleJsonToEvent()`/`eventToGoogleJson()` (ver
+  arriba); verificado end-to-end forzando un resync completo (borrando
+  `.ics`/`.sync.json` del calendario y reiniciando la app) en los calendarios
+  "mari.filiu@gmail.com" y "Niños".
+- El calendario "Oscar Privado" (>250 eventos) no mostraba eventos futuros
+  recientes (p.ej. "Vacuna polvo" del día siguiente): `fetchEvents` solo leía
+  la primera página (250 eventos) de Google y descartaba `nextPageToken`.
+  Corregido con `fetchEventsPage()` recursiva (ver arriba); verificado:
+  tras el fix el resync trae 2769 eventos (antes 250) y el evento del día
+  siguiente aparece correctamente.
+- **Nota de depuración importante**: editar a mano `~/.local/share/Kweek/Kweek/calendars.json`/`.sync.json`/`.ics` mientras la
+  app está en ejecución NO tiene efecto — `CalendarManager` mantiene su
+  propio estado en memoria (`syncToken`/`syncItems`/`MemoryCalendar`) cargado
+  al inicio y lo vuelve a escribir en cada sync, sobrescribiendo cualquier
+  cambio externo. Para forzar un resync completo de un calendario hay que:
+  cerrar la app, borrar `calendars/<id>.ics`, `.ics~` y `.sync.json`, y
+  relanzar la app **antes** de pulsar sync.
 
 Nota de CMake: fue necesario añadir `target_include_directories(kweek
 PRIVATE core)` para que la generación automática de `qmltyperegistrations`

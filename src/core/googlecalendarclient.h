@@ -63,6 +63,9 @@ private:
     /// Exchanges @p refreshToken for a fresh access token, then invokes @p callback(accessToken, error).
     void withAccessToken(const QString &refreshToken, const std::function<void(const QString &, const QString &)> &callback);
 
+    /// Fetches one page of events, recursing via "pageToken" until all pages are collected, then emits eventsFetched().
+    void fetchEventsPage(const QString &accessToken, const QString &calendarId, const QString &syncToken, const QString &pageToken, QList<RemoteEvent> accumulated);
+
     QNetworkAccessManager *m_nam;
     QOAuth2AuthorizationCodeFlow *m_flow = nullptr;
 };

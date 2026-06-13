@@ -120,6 +120,40 @@ QString rruleFreq(const QString &rrule)
     return QString();
 }
 
+/// Extracts the UNTIL value from a "RRULE:FREQ=...;..." string as a QDateTime, or an invalid QDateTime.
+QDateTime rruleUntil(const QString &rrule)
+{
+    const QString rule = rrule.startsWith(QLatin1String("RRULE:")) ? rrule.mid(6) : rrule;
+    for (const QString &part : rule.split(QLatin1Char(';'))) {
+        if (!part.startsWith(QLatin1String("UNTIL="))) {
+            continue;
+        }
+        const QString value = part.mid(6);
+        if (value.endsWith(QLatin1Char('Z'))) {
+            QDateTime dt = QDateTime::fromString(value.chopped(1), QStringLiteral("yyyyMMddTHHmmss"));
+            dt.setTimeZone(QTimeZone::utc());
+            return dt;
+        }
+        if (value.contains(QLatin1Char('T'))) {
+            return QDateTime::fromString(value, QStringLiteral("yyyyMMddTHHmmss"));
+        }
+        return QDateTime(QDate::fromString(value, QStringLiteral("yyyyMMdd")), QTime(23, 59, 59));
+    }
+    return QDateTime();
+}
+
+/// Extracts the COUNT value from a "RRULE:FREQ=...;..." string, or -1 if not present.
+int rruleCount(const QString &rrule)
+{
+    const QString rule = rrule.startsWith(QLatin1String("RRULE:")) ? rrule.mid(6) : rrule;
+    for (const QString &part : rule.split(QLatin1Char(';'))) {
+        if (part.startsWith(QLatin1String("COUNT="))) {
+            return part.mid(6).toInt();
+        }
+    }
+    return -1;
+}
+
 /// Converts a Google Calendar API event resource into a KCalendarCore event.
 /// The event's UID is set to the Google event id.
 Event::Ptr googleJsonToEvent(const QJsonObject &json)
@@ -158,7 +192,8 @@ Event::Ptr googleJsonToEvent(const QJsonObject &json)
 
     event->recurrence()->clear();
     for (const QJsonValue &value : json.value(QStringLiteral("recurrence")).toArray()) {
-        const QString freq = rruleFreq(value.toString());
+        const QString rrule = value.toString();
+        const QString freq = rruleFreq(rrule);
         if (freq == QLatin1String("DAILY")) {
             event->recurrence()->setDaily(1);
         } else if (freq == QLatin1String("WEEKLY")) {
@@ -167,6 +202,16 @@ Event::Ptr googleJsonToEvent(const QJsonObject &json)
             event->recurrence()->setMonthly(1);
         } else if (freq == QLatin1String("YEARLY")) {
             event->recurrence()->setYearly(1);
+        } else {
+            break;
+        }
+
+        const QDateTime until = rruleUntil(rrule);
+        const int count = rruleCount(rrule);
+        if (until.isValid()) {
+            event->recurrence()->setEndDateTime(until);
+        } else if (count > 0) {
+            event->recurrence()->setDuration(count);
         }
         break;
     }
@@ -216,7 +261,15 @@ QJsonObject eventToGoogleJson(const Event::Ptr &event)
     if (event->recurs()) {
         const QString freq = rruleFreqForRecurrenceType(event->recurrence()->recurrenceType());
         if (!freq.isEmpty()) {
-            json.insert(QStringLiteral("recurrence"), QJsonArray{QString(QStringLiteral("RRULE:FREQ=") + freq)});
+            QString rrule = QStringLiteral("RRULE:FREQ=") + freq;
+            const QDateTime until = event->recurrence()->endDateTime();
+            const int duration = event->recurrence()->duration();
+            if (until.isValid()) {
+                rrule += QStringLiteral(";UNTIL=") + until.toUTC().toString(QStringLiteral("yyyyMMdd'T'HHmmss'Z'"));
+            } else if (duration > 0) {
+                rrule += QStringLiteral(";COUNT=") + QString::number(duration);
+            }
+            json.insert(QStringLiteral("recurrence"), QJsonArray{rrule});
         }
     }
 
