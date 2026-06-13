@@ -258,6 +258,26 @@ borrado de cuenta.
   cerrar la app, borrar `calendars/<id>.ics`, `.ics~` y `.sync.json`, y
   relanzar la app **antes** de pulsar sync.
 
+**Auditoría del resto de calendarios Google de la cuenta** (mismo día,
+comparando recuento de eventos vía API de Google con paginación contra
+`.ics`/`.sync.json` locales):
+
+- "Festivos en España" (`301f1963-846b-4581-8d81-4903105743c5`, >250 eventos)
+  tenía el mismo bug de paginación que "Oscar Privado" (250 locales vs 386 en
+  Google). Corregido con el mismo procedimiento de resync completo; verificado
+  386/386 tras el resync.
+- "ivanbernabeuperez@gmail.com" tiene 30 eventos locales vs 31 en Google; el
+  evento que falta es una **excepción de recurrencia** (`recurringEventId`
+  presente), lo cual coincide con la limitación v1 ya documentada (las
+  excepciones de recurrencia del servidor se ignoran al sincronizar). No es un
+  bug nuevo, no requiere acción.
+- "Cine y TV" (106/106) y "Familia" (15/15) coinciden exactamente con Google,
+  sin problemas.
+- Con esto, los 7 calendarios Google de la cuenta (Festivos en España,
+  ivanbernabeuperez@gmail.com, mari.filiu@gmail.com, Cine y TV, Niños, Oscar
+  Privado, Familia) están verificados como correctos, salvo la limitación v1
+  conocida de excepciones de recurrencia.
+
 Nota de CMake: fue necesario añadir `target_include_directories(kweek
 PRIVATE core)` para que la generación automática de `qmltyperegistrations`
 encuentre `calendarmanager.h`/`eventlistmodel.h` por nombre simple.
