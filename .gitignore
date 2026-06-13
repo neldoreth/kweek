@@ -4,3 +4,6 @@
 
 # Contains the real Google OAuth client id/secret; see googleoauthconfig.h.example.
 /src/core/googleoauthconfig.h
+
+# Contains the real Microsoft Azure AD app client id; see microsoftoauthconfig.h.example.
+/src/core/microsoftoauthconfig.h

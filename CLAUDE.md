@@ -182,6 +182,90 @@ Modelo de datos de eventos implementado sobre KCalendarCore:
     Google" + estado/progreso (señal `googleAccountAdded`).
     `CalendarSidebar.qml` añade botón "Connect Google account…" y extiende
     el botón/indicador de sync manual a calendarios `type: "google"`.
+- **Microsoft Graph (OAuth2 + API v1.0)**: `CalendarManager` gestiona también
+  **calendarios Microsoft** (`type: "microsoft"`), persistidos igual que los
+  Google (`accountId` + `remoteUrl` = id de calendario de Graph). El campo
+  `syncToken` se reutiliza para guardar la **URL completa de
+  `@odata.deltaLink`** (el equivalente de Graph al `syncToken` de Google).
+  Credenciales (`email` + `refreshToken`) en KWallet vía
+  `CredentialStore::storeMicrosoftTokens`/`readMicrosoftTokens`.
+  - `src/core/microsoftoauthconfig.h` (gitignored, plantilla en
+    `microsoftoauthconfig.h.example`): `kClientId` de un **app registration de
+    Azure AD** ("Accounts in any organizational directory and personal
+    Microsoft accounts", plataforma "Mobile and desktop applications",
+    redirect `http://localhost`, "Allow public client flows" = Yes). Cliente
+    público (sin secreto), solo PKCE.
+  - `src/core/microsoftgraphclient.h/.cpp` — `MicrosoftGraphClient`: cliente
+    sobre `QNetworkAccessManager`. `authenticate()` ejecuta
+    `QOAuth2AuthorizationCodeFlow` (PKCE S256) contra
+    `login.microsoftonline.com/common/oauth2/v2.0/{authorize,token}` con
+    scopes `Calendars.ReadWrite`, `User.Read`, `offline_access`, `openid`,
+    `email`; al recibir `granted()` consulta `https://graph.microsoft.com/v1.0/me`
+    para el email (`mail`, fallback `userPrincipalName`) y emite
+    `authenticated(refreshToken, email, error)`. Igual que Google, conecta
+    `serverReportedErrorOccurred`/`requestFailed` para reportar errores de
+    OAuth2 en lugar de quedarse en "Connecting…". El resto de operaciones
+    (`listCalendars`, `fetchEvents`, `putEvent`, `deleteEvent`) cambian el
+    `refreshToken` por un access token fresco vía `POST /token` antes de cada
+    llamada (`withAccessToken`, sin `client_secret`: cliente público). Todas
+    las peticiones llevan la cabecera `Prefer: outlook.timezone="UTC"`, de
+    forma que Graph devuelve/acepta siempre `start`/`end` en UTC (evita el
+    mapeo nombre-de-zona-horaria-de-Windows <-> IANA). `listCalendars()` hace
+    GET `/me/calendars` (`id`->id, `name`->displayName,
+    `isDefaultCalendar`->primary, `color` es un enum con nombre tipo
+    `lightBlue`/`auto`/... mapeado a hex aproximado vía tabla en
+    `graphColorToHex()`, `auto`/desconocido -> cadena vacía -> color por
+    defecto). `fetchEvents(calendarId, deltaLink)`: si `deltaLink` está vacío
+    hace GET `/me/calendars/{id}/events/delta`, si no GET directo a la URL de
+    `deltaLink`; pagina vía `fetchEventsPage()` siguiendo `@odata.nextLink`
+    hasta que la respuesta trae `@odata.deltaLink` (emitido como
+    `nextDeltaLink`); cada item -> `{id, etag: "@odata.etag", json,
+    removed: contiene "@removed"}`; un 410 se reporta como
+    `deltaInvalid=true` para forzar resync completo. `putEvent()` hace POST
+    (crear, `eventId` vacío) o PATCH (actualizar) a `/me/calendars/{id}/events[/eventId]`,
+    devolviendo `id`+`@odata.etag`. `deleteEvent()` hace DELETE; un 404 se
+    trata como éxito.
+  - Mapeo evento <-> JSON de Graph: `microsoftJsonToEvent()`/
+    `eventToMicrosoftJson()` en `calendarmanager.cpp` (`id`->uid,
+    `subject`->summary, `body.content`->description (HTML tal cual, sin
+    limpiar), `location.displayName`->location, `start`/`end` siempre como
+    `{"dateTime": ..., "timeZone": "UTC"}` gracias a la cabecera `Prefer`,
+    `isAllDay`, `showAs` free/busy <-> `Transparent`/`Opaque`. Recurrencia:
+    solo `daily`/`weekly`/`absoluteMonthly`/`absoluteYearly` con
+    `interval == 1` (cualquier otro patrón, incl. `relativeMonthly`/
+    `relativeYearly` o `interval != 1`, se importa **sin recurrencia** —
+    limitación v1 documentada); `range.type` `endDate`/`numberOfOccurrences`/
+    `noEnd` <-> `setEndDateTime()`/`setDuration()`. Al exportar, `weekly`
+    incluye `daysOfWeek` (vía `graphDayOfWeek()`) y `absoluteMonthly`/
+    `absoluteYearly` incluyen `dayOfMonth`/`month` (campos requeridos por
+    Graph que Google no exige). `isReminderOn`+`reminderMinutesBeforeStart`
+    <-> una alarma Display, igual que Google.
+  - `CalendarManager::addMicrosoftAccount()`: autentica vía navegador, guarda
+    tokens, hace `listCalendars` y crea un `LocalCalendar` tipo "microsoft"
+    por calendario descubierto, lanzando un `syncCalendar` inicial. Emite
+    `microsoftAccountAdded(accountId, calendarCount, error)`.
+  - `syncCalendar(id)` despacha también a `syncMicrosoftCalendar` para
+    `type == "microsoft"`. `syncMicrosoftCalendar` usa el `@odata.deltaLink`
+    guardado en `syncToken` para pull incremental; items con `"@removed"` se
+    borran localmente; un `deltaInvalid` limpia `syncToken`+`syncItems` y
+    repite con resync completo. **Limitación v1**: los items con
+    `type: "occurrence"`/`"exception"` (instancias modificadas/canceladas de
+    una serie recurrente) se **omiten** en el pull — a diferencia de Google,
+    las excepciones de recurrencia de Microsoft todavía no se sincronizan.
+  - `pushEvent`/`pushDelete` ganan rama `type == "microsoft"`, idéntica en
+    estructura a la de Google: al crear un evento, Graph asigna su propio id
+    y el UID local se renombra para que coincida.
+  - `src/qml/AddMicrosoftAccountDialog.qml` — diálogo con botón "Sign in with
+    Microsoft" + estado/progreso (señal `microsoftAccountAdded`).
+    `CalendarSidebar.qml` añade botón "Connect Microsoft account…" y extiende
+    el botón/indicador de sync manual a calendarios `type: "microsoft"`.
+
+  **Estado de verificación**: build limpio (`cmake -B build -G Ninja &&
+  cmake --build build`) y smoke test offscreen sin errores QML. No se ha
+  probado un login real (requiere un app registration de Azure AD propio,
+  ver `microsoftoauthconfig.h.example`); pendiente verificación end-to-end
+  con una cuenta Microsoft real (login, descubrimiento, sync inicial/
+  incremental, push/borrado de eventos), igual que se hizo para Google.
 - `src/core/eventlistmodel.h/.cpp` — `EventListModel` (QAbstractListModel,
   QML_ELEMENT): expande ocurrencias (incl. recurrentes) de todos los
   calendarios locales **visibles** dentro de `[rangeStart, rangeEnd)`
@@ -311,11 +395,60 @@ comparando recuento de eventos vía API de Google con paginación contra
   sin problemas.
 - Con esto, los 7 calendarios Google de la cuenta (Festivos en España,
   ivanbernabeuperez@gmail.com, mari.filiu@gmail.com, Cine y TV, Niños, Oscar
-  Privado, Familia) están verificados como correctos. Sigue pendiente probar
-  el caso de una instancia **cancelada** (`status: "cancelled"` +
-  `recurringEventId`, que se traduce en `EXDATE` sobre el maestro) con un
-  evento real, y el reintento automático de `pendingPush` tras un push
-  fallido (ver sección Google Calendar).
+  Privado, Familia) están verificados como correctos.
+
+**Instancia cancelada de una serie recurrente (`status: "cancelled"` +
+`recurringEventId` -> `EXDATE` en el maestro) — verificado end-to-end**
+(2026-06-13, cuenta real, calendario "Cine y TV"): usando el mismo harness
+`--sync-test <calendarId>` (revertido tras la prueba) y la API de Google
+Calendar para crear/borrar eventos de prueba:
+
+- Se creó un evento recurrente real "EXC-TEST recurring"
+  (`RRULE:FREQ=WEEKLY;COUNT=4`, desde 2026-06-15).
+- Se borró solo la 2ª instancia (2026-06-22) vía la API de Google
+  (`DELETE` sobre el id de instancia `<masterId>_20260622T080000Z`), lo que
+  Google reporta como un evento separado con `status: "cancelled"` +
+  `recurringEventId` + `originalStartTime`.
+- Tras un `syncCalendar()`, el `.ics` resultante para el evento maestro
+  contiene `RRULE:FREQ=WEEKLY;COUNT=4` **y**
+  `EXDATE;TZID=Europe/Madrid:20260622T100000`, confirmando que
+  `master->recurrence()->addExDateTime(recurrenceId)` se aplicó
+  correctamente y que la ocurrencia cancelada no aparece como excepción
+  separada en `syncItems` (solo la entrada del maestro).
+- Limpieza: se borró el evento maestro completo en Google y se repitió el
+  sync; el evento de prueba desapareció por completo del `.ics` local
+  (0 referencias a "EXC-TEST").
+
+Con esto, el camino "instancia cancelada -> `EXDATE`" queda verificado.
+
+**Reintento automático de `pendingPush` tras un push fallido — verificado
+end-to-end** (2026-06-13): usando un entorno aislado (`XDG_DATA_HOME`
+apuntando a un directorio temporal, sin tocar la cuenta real) con un
+`calendars.json`/`accounts.json` ficticios (un calendario "Personal" local +
+un calendario `type: "caldav"` `pp-test-cal` con `accountId:
+"pp-test-account"` y `remoteUrl: http://127.0.0.1:8123/cal/`), credenciales
+falsas en KWallet, un servidor CalDAV mock (`http.server` de Python, REPORT
+-> multistatus vacío 207, PUT configurable 500/201) y un harness temporal
+(`--pending-push-test create|retry <calendarId>` en `main.cpp`, revertido tras
+la prueba):
+
+- **Fase "create"** (mock con PUT -> 500): `addEvent()` marca el uid en
+  `pendingPush` y `pushEvent()` hace `PUT`, que falla (500 ->
+  `QNetworkReply` error). Resultado: se emite `syncError`, y
+  `pp-test-cal.sync.json` queda con `"pendingPush": ["<uid>"]` y `"items":
+  {}` (no se pierde el evento local ni se marca como sincronizado).
+- **Fase "retry"** (mock con PUT -> 201 + ETag): `syncCalendar()` hace
+  `REPORT` (multistatus vacío, sin cambios remotos) y al terminar llama a
+  `retryPendingPushes()`, que reintenta `pushEvent()` para el uid pendiente;
+  el `PUT` esta vez devuelve 201, `eventPut` actualiza `syncItems` con el
+  nuevo etag y elimina el uid de `pendingPush`. Resultado:
+  `pp-test-cal.sync.json` queda con `"items": {"<uid>": {"etag":
+  "\"etag-ok-1\"", "href": "..."}}` y `"pendingPush": []`.
+
+Con esto, el mecanismo de pending-push (no se pierde una edición local si el
+push falla, y se reintenta automáticamente en el siguiente sync hasta tener
+éxito) queda verificado end-to-end. Las credenciales y ficheros de prueba se
+eliminaron tras la prueba.
 
 **Sync incremental con `syncToken` — verificado end-to-end** (2026-06-13,
 cuenta real, calendario "Cine y TV"): usando un harness temporal
@@ -402,10 +535,10 @@ Verificado end-to-end con la cuenta real: resync completo de
 "ivanbernabeuperez@gmail.com" pasa de 30/31 a 31/31 eventos, con la
 excepción correctamente serializada (`RECURRENCE-ID`, mismo `UID` que el
 maestro) y registrada en `.sync.json` con clave compuesta
-`uid#recurrenceIdISO`. Pendiente: probar con un evento real el caso
-"instancia cancelada" (`EXDATE` sobre el maestro) y el reintento de
-`pendingPush` tras un push fallido (la lógica existe y compila, pero no se
-ha forzado un fallo de red real para verla en acción).
+`uid#recurrenceIdISO`. El caso "instancia cancelada" (`EXDATE` sobre el
+maestro) y el reintento de `pendingPush` tras un push fallido también están
+verificados end-to-end (ver más abajo, secciones "Instancia cancelada de una
+serie recurrente" y "Reintento automático de `pendingPush`").
 
 Nota de CMake: fue necesario añadir `target_include_directories(kweek
 PRIVATE core)` para que la generación automática de `qmltyperegistrations`
@@ -586,7 +719,15 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
       login, descubrimiento, sync inicial, sync incremental con `syncToken`,
       push/borrado individual de eventos y borrado de cuenta (ver
       "Verificado")
-- [ ] Integración Microsoft Graph (personal + 365/trabajo)
+- [x] Integración Microsoft Graph (personal + 365/trabajo) — OAuth2 PKCE
+      (cliente público), descubrimiento de calendarios, sync inicial e
+      incremental vía delta query, push/borrado de eventos, recurrencia
+      simple (daily/weekly/absoluteMonthly/absoluteYearly interval=1). Build
+      limpio y smoke test offscreen ok; **pendiente verificación end-to-end
+      con una cuenta Microsoft real** (requiere app registration de Azure AD
+      propio, ver `microsoftoauthconfig.h.example`); excepciones de
+      recurrencia (`type: "occurrence"/"exception"`) se omiten en el pull
+      (limitación v1, ver sección "Microsoft Graph" arriba)
 - [x] Gestión de múltiples cuentas, KWallet (cuentas CalDAV; credenciales en
       KWallet vía `CredentialStore`)
 - [x] Excepciones de recurrencia remotas (`RECURRENCE-ID`/`recurringEventId`)
@@ -631,3 +772,12 @@ Campos a soportar y sincronizar siempre que el proveedor lo permita:
   caducado), push/borrado de eventos individuales y borrado de cuenta ya
   verificados end-to-end. Pendiente: resolución de conflictos y excepciones
   de recurrencia (limitación v1 conocida).
+- **Integración Microsoft Graph**: implementada (ver sección "Microsoft
+  Graph" arriba), build limpio y smoke test offscreen ok. Las credenciales
+  OAuth reales se guardan en `src/core/microsoftoauthconfig.h` (gitignored,
+  **no se sube a GitHub**); hay un `src/core/microsoftoauthconfig.h.example`
+  committeado como plantilla con instrucciones para crear el app registration
+  de Azure AD. Pendiente verificación end-to-end con una cuenta real (login,
+  descubrimiento, sync inicial/incremental, push/borrado) cuando se disponga
+  de un client ID; excepciones de recurrencia (`type: "occurrence"/
+  "exception"`) no se sincronizan (limitación v1).

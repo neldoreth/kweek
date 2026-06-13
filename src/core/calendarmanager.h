@@ -39,34 +39,35 @@ public:
         QString name;
         QString color;
         bool visible = true;
-        /// "local", "caldav" or "google".
+        /// "local", "caldav", "google" or "microsoft".
         QString type = QStringLiteral("local");
-        /// Only set for type == "caldav"/"google": id of the owning account.
+        /// Only set for type == "caldav"/"google"/"microsoft": id of the owning account.
         QString accountId;
         /// For type == "caldav": URL of the remote calendar collection.
-        /// For type == "google": the Google calendar id.
+        /// For type == "google"/"microsoft": the remote calendar id.
         QString remoteUrl;
         KCalendarCore::MemoryCalendar::Ptr calendar;
         KCalendarCore::FileStorage::Ptr storage;
-        /// uid -> {href, etag} for "caldav", uid -> {googleEventId, etag} for "google".
+        /// uid -> {href, etag} for "caldav", uid -> {googleEventId/eventId, etag} for "google"/"microsoft".
         /// Google recurrence exception instances use the composite key
         /// "uid#recurrenceIdISO".
         SyncItems syncItems;
-        /// Only used for type == "google": incremental sync token.
+        /// Incremental sync token: Google's syncToken, or Microsoft Graph's
+        /// full "@odata.deltaLink" URL. Unused for "caldav"/"local".
         QString syncToken;
         /// UIDs with local edits that haven't been successfully pushed yet.
         /// Retried on every sync; protected from being overwritten by pulls.
         QSet<QString> pendingPush;
     };
 
-    /// A CalDAV or Google account: credentials/tokens are stored separately in KWallet.
+    /// A CalDAV, Google or Microsoft account: credentials/tokens are stored separately in KWallet.
     struct Account {
         QString id;
-        /// "caldav" or "google". Accounts loaded without a type are assumed "caldav".
+        /// "caldav", "google" or "microsoft". Accounts loaded without a type are assumed "caldav".
         QString type = QStringLiteral("caldav");
         /// Only set for type == "caldav".
         QString serverUrl;
-        /// Username (CalDAV) or email address (Google).
+        /// Username (CalDAV) or email address (Google/Microsoft).
         QString username;
     };
 
@@ -105,7 +106,15 @@ public:
      */
     Q_INVOKABLE void addGoogleAccount();
 
-    /// Pulls remote changes for a CalDAV/Google calendar. No-op for local calendars.
+    /**
+     * Connects a Microsoft account interactively: runs the OAuth2 PKCE flow
+     * via the system browser, stores the refresh token in KWallet, lists the
+     * user's Outlook/Microsoft 365 calendars and adds one local calendar per
+     * discovered calendar. Emits microsoftAccountAdded() with the result.
+     */
+    Q_INVOKABLE void addMicrosoftAccount();
+
+    /// Pulls remote changes for a CalDAV/Google/Microsoft calendar. No-op for local calendars.
     Q_INVOKABLE void syncCalendar(const QString &calendarId);
 
     /// Syncs all CalDAV calendars.
@@ -177,6 +186,9 @@ Q_SIGNALS:
     /// Result of addGoogleAccount(): @p error is empty on success.
     void googleAccountAdded(const QString &accountId, int calendarCount, const QString &error);
 
+    /// Result of addMicrosoftAccount(): @p error is empty on success.
+    void microsoftAccountAdded(const QString &accountId, int calendarCount, const QString &error);
+
     void syncStarted(const QString &calendarId);
     void syncFinished(const QString &calendarId);
     void syncError(const QString &calendarId, const QString &error);
@@ -218,6 +230,12 @@ private:
 
     /// Performs a Google calendar sync, optionally forcing a full resync (empty syncToken).
     void syncGoogleCalendar(LocalCalendar &entry, bool forceFullResync);
+
+    /// Pulls remote changes for a Microsoft calendar (see syncCalendar()).
+    void syncMicrosoftCalendar(LocalCalendar &entry);
+
+    /// Performs a Microsoft calendar sync, optionally forcing a full resync (empty delta link).
+    void syncMicrosoftCalendar(LocalCalendar &entry, bool forceFullResync);
 
     QList<LocalCalendar> m_calendars;
     QList<Account> m_accounts;

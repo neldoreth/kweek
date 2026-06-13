@@ -3,6 +3,7 @@
 #include "caldavclient.h"
 #include "credentialstore.h"
 #include "googlecalendarclient.h"
+#include "microsoftgraphclient.h"
 
 #include <QDate>
 #include <QDir>
@@ -34,6 +35,7 @@ constexpr auto kDefaultCalendarColor = "#7B61FF";
 constexpr auto kTypeLocal = "local";
 constexpr auto kTypeCalDav = "caldav";
 constexpr auto kTypeGoogle = "google";
+constexpr auto kTypeMicrosoft = "microsoft";
 
 void applyRecurrence(const Event::Ptr &event, const QString &recurrence)
 {
@@ -317,6 +319,214 @@ QJsonObject eventToGoogleJson(const Event::Ptr &event)
     return json;
 }
 
+/// Converts a Microsoft Graph event resource into a KCalendarCore event.
+/// The event's UID is set to the Graph event id. Assumes dateTimes are in
+/// UTC (requests are sent with "Prefer: outlook.timezone=\"UTC\"").
+/// Recurrence patterns other than daily/weekly/absoluteMonthly/absoluteYearly
+/// with interval 1 are imported as non-recurring (v1 limitation).
+Event::Ptr microsoftJsonToEvent(const QJsonObject &json)
+{
+    Event::Ptr event(new Event);
+    event->setUid(json.value(QStringLiteral("id")).toString());
+    event->setSummary(json.value(QStringLiteral("subject")).toString());
+    event->setDescription(json.value(QStringLiteral("body")).toObject().value(QStringLiteral("content")).toString());
+    event->setLocation(json.value(QStringLiteral("location")).toObject().value(QStringLiteral("displayName")).toString());
+
+    auto parseUtcDateTime = [](const QJsonObject &obj) {
+        const QString value = obj.value(QStringLiteral("dateTime")).toString();
+        QDateTime dt = QDateTime::fromString(value.left(19), QStringLiteral("yyyy-MM-ddTHH:mm:ss"));
+        dt.setTimeZone(QTimeZone::utc());
+        return dt;
+    };
+
+    const bool allDay = json.value(QStringLiteral("isAllDay")).toBool();
+    event->setAllDay(allDay);
+
+    if (allDay) {
+        event->setDtStart(QDateTime(parseUtcDateTime(json.value(QStringLiteral("start")).toObject()).date(), QTime(0, 0)));
+        event->setDtEnd(QDateTime(parseUtcDateTime(json.value(QStringLiteral("end")).toObject()).date(), QTime(0, 0)));
+    } else {
+        event->setDtStart(parseUtcDateTime(json.value(QStringLiteral("start")).toObject()));
+        event->setDtEnd(parseUtcDateTime(json.value(QStringLiteral("end")).toObject()));
+    }
+
+    const QString showAs = json.value(QStringLiteral("showAs")).toString();
+    event->setTransparency(showAs == QLatin1String("free") ? Event::Transparent : Event::Opaque);
+
+    event->recurrence()->clear();
+    const QJsonObject recurrence = json.value(QStringLiteral("recurrence")).toObject();
+    if (!recurrence.isEmpty()) {
+        const QJsonObject pattern = recurrence.value(QStringLiteral("pattern")).toObject();
+        const QString patternType = pattern.value(QStringLiteral("type")).toString();
+        const int interval = pattern.value(QStringLiteral("interval")).toInt();
+
+        bool recognized = true;
+        if (interval == 1 && patternType == QLatin1String("daily")) {
+            event->recurrence()->setDaily(1);
+        } else if (interval == 1 && patternType == QLatin1String("weekly")) {
+            event->recurrence()->setWeekly(1);
+        } else if (interval == 1 && patternType == QLatin1String("absoluteMonthly")) {
+            event->recurrence()->setMonthly(1);
+        } else if (interval == 1 && patternType == QLatin1String("absoluteYearly")) {
+            event->recurrence()->setYearly(1);
+        } else {
+            recognized = false;
+        }
+
+        if (recognized) {
+            const QJsonObject range = recurrence.value(QStringLiteral("range")).toObject();
+            const QString rangeType = range.value(QStringLiteral("type")).toString();
+            if (rangeType == QLatin1String("endDate")) {
+                const QDate endDate = QDate::fromString(range.value(QStringLiteral("endDate")).toString(), Qt::ISODate);
+                if (endDate.isValid()) {
+                    event->recurrence()->setEndDate(endDate);
+                }
+            } else if (rangeType == QLatin1String("numberOfOccurrences")) {
+                const int count = range.value(QStringLiteral("numberOfOccurrences")).toInt();
+                if (count > 0) {
+                    event->recurrence()->setDuration(count);
+                }
+            }
+            // "noEnd": nothing more to do.
+        }
+    }
+
+    event->clearAlarms();
+    if (json.value(QStringLiteral("isReminderOn")).toBool()) {
+        Alarm::Ptr alarm = event->newAlarm();
+        alarm->setType(Alarm::Display);
+        alarm->setDisplayAlarm(event->summary());
+        alarm->setStartOffset(Duration(-json.value(QStringLiteral("reminderMinutesBeforeStart")).toInt() * 60));
+        alarm->setEnabled(true);
+    }
+
+    return event;
+}
+
+/// Returns the Microsoft Graph weekday name for a Qt::DayOfWeek value (1 = Monday .. 7 = Sunday).
+QString graphDayOfWeek(int qtDayOfWeek)
+{
+    switch (qtDayOfWeek) {
+    case 1:
+        return QStringLiteral("monday");
+    case 2:
+        return QStringLiteral("tuesday");
+    case 3:
+        return QStringLiteral("wednesday");
+    case 4:
+        return QStringLiteral("thursday");
+    case 5:
+        return QStringLiteral("friday");
+    case 6:
+        return QStringLiteral("saturday");
+    default:
+        return QStringLiteral("sunday");
+    }
+}
+
+/// Converts a KCalendarCore event into a Microsoft Graph event resource (without "id").
+/// Dates/times are always sent in UTC (paired with "Prefer: outlook.timezone=\"UTC\"").
+QJsonObject eventToMicrosoftJson(const Event::Ptr &event)
+{
+    QJsonObject json;
+    json.insert(QStringLiteral("subject"), event->summary());
+    json.insert(QStringLiteral("body"), QJsonObject{
+        {QStringLiteral("contentType"), QStringLiteral("text")},
+        {QStringLiteral("content"), event->description()},
+    });
+    json.insert(QStringLiteral("location"), QJsonObject{
+        {QStringLiteral("displayName"), event->location()},
+    });
+    json.insert(QStringLiteral("isAllDay"), event->allDay());
+
+    QJsonObject start;
+    QJsonObject end;
+    if (event->allDay()) {
+        start.insert(QStringLiteral("dateTime"), QString(event->dtStart().date().toString(Qt::ISODate) + QStringLiteral("T00:00:00")));
+        end.insert(QStringLiteral("dateTime"), QString(event->dtEnd().date().addDays(1).toString(Qt::ISODate) + QStringLiteral("T00:00:00")));
+    } else {
+        start.insert(QStringLiteral("dateTime"), event->dtStart().toUTC().toString(QStringLiteral("yyyy-MM-ddTHH:mm:ss")));
+        end.insert(QStringLiteral("dateTime"), event->dtEnd().toUTC().toString(QStringLiteral("yyyy-MM-ddTHH:mm:ss")));
+    }
+    start.insert(QStringLiteral("timeZone"), QStringLiteral("UTC"));
+    end.insert(QStringLiteral("timeZone"), QStringLiteral("UTC"));
+    json.insert(QStringLiteral("start"), start);
+    json.insert(QStringLiteral("end"), end);
+
+    json.insert(QStringLiteral("showAs"), event->transparency() == Event::Transparent ? QStringLiteral("free") : QStringLiteral("busy"));
+
+    if (event->recurs()) {
+        QString patternType;
+        switch (event->recurrence()->recurrenceType()) {
+        case RecurrenceRule::rDaily:
+            patternType = QStringLiteral("daily");
+            break;
+        case RecurrenceRule::rWeekly:
+            patternType = QStringLiteral("weekly");
+            break;
+        case RecurrenceRule::rMonthly:
+            patternType = QStringLiteral("absoluteMonthly");
+            break;
+        case RecurrenceRule::rYearly:
+            patternType = QStringLiteral("absoluteYearly");
+            break;
+        default:
+            break;
+        }
+
+        if (!patternType.isEmpty()) {
+            QJsonObject pattern{
+                {QStringLiteral("type"), patternType},
+                {QStringLiteral("interval"), 1},
+            };
+            if (patternType == QLatin1String("weekly")) {
+                pattern.insert(QStringLiteral("daysOfWeek"), QJsonArray{graphDayOfWeek(event->dtStart().date().dayOfWeek())});
+            } else if (patternType == QLatin1String("absoluteMonthly") || patternType == QLatin1String("absoluteYearly")) {
+                pattern.insert(QStringLiteral("dayOfMonth"), event->dtStart().date().day());
+                if (patternType == QLatin1String("absoluteYearly")) {
+                    pattern.insert(QStringLiteral("month"), event->dtStart().date().month());
+                }
+            }
+
+            const QString startDate = event->dtStart().date().toString(Qt::ISODate);
+            QJsonObject range{
+                {QStringLiteral("type"), QStringLiteral("noEnd")},
+                {QStringLiteral("startDate"), startDate},
+            };
+            const QDateTime until = event->recurrence()->endDateTime();
+            const int duration = event->recurrence()->duration();
+            if (until.isValid()) {
+                range = QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("endDate")},
+                    {QStringLiteral("startDate"), startDate},
+                    {QStringLiteral("endDate"), until.date().toString(Qt::ISODate)},
+                };
+            } else if (duration > 0) {
+                range = QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("numberOfOccurrences")},
+                    {QStringLiteral("startDate"), startDate},
+                    {QStringLiteral("numberOfOccurrences"), duration},
+                };
+            }
+
+            json.insert(QStringLiteral("recurrence"), QJsonObject{
+                {QStringLiteral("pattern"), pattern},
+                {QStringLiteral("range"), range},
+            });
+        }
+    }
+
+    const Alarm::List alarms = event->alarms();
+    if (!alarms.isEmpty()) {
+        json.insert(QStringLiteral("isReminderOn"), true);
+        json.insert(QStringLiteral("reminderMinutesBeforeStart"), int(-alarms.first()->startOffset().asSeconds() / 60));
+    } else {
+        json.insert(QStringLiteral("isReminderOn"), false);
+    }
+
+    return json;
+}
+
 }
 
 CalendarManager::CalendarManager(QObject *parent)
@@ -389,7 +599,7 @@ void CalendarManager::saveSyncState(const LocalCalendar &entry)
 
     QJsonObject obj;
     obj.insert(QStringLiteral("items"), items);
-    if (entry.type == QLatin1String(kTypeGoogle)) {
+    if (entry.type == QLatin1String(kTypeGoogle) || entry.type == QLatin1String(kTypeMicrosoft)) {
         obj.insert(QStringLiteral("syncToken"), entry.syncToken);
     }
 
@@ -478,7 +688,7 @@ void CalendarManager::loadCalendars()
         entry.storage = FileStorage::Ptr(new FileStorage(entry.calendar, icsPathFor(entry.id)));
         entry.storage->load();
 
-        if (entry.type == QLatin1String(kTypeCalDav) || entry.type == QLatin1String(kTypeGoogle)) {
+        if (entry.type == QLatin1String(kTypeCalDav) || entry.type == QLatin1String(kTypeGoogle) || entry.type == QLatin1String(kTypeMicrosoft)) {
             loadSyncState(entry);
         }
 
@@ -499,7 +709,7 @@ void CalendarManager::saveCalendarsMeta()
             {QStringLiteral("visible"), entry.visible},
             {QStringLiteral("type"), entry.type},
         };
-        if (entry.type == QLatin1String(kTypeCalDav) || entry.type == QLatin1String(kTypeGoogle)) {
+        if (entry.type == QLatin1String(kTypeCalDav) || entry.type == QLatin1String(kTypeGoogle) || entry.type == QLatin1String(kTypeMicrosoft)) {
             obj.insert(QStringLiteral("accountId"), entry.accountId);
             obj.insert(QStringLiteral("remoteUrl"), entry.remoteUrl);
         }
@@ -569,7 +779,7 @@ CalendarManager::LocalCalendar *CalendarManager::findCalendarForEvent(const QStr
 
 void CalendarManager::markPendingPush(LocalCalendar &entry, const QString &uid)
 {
-    if (entry.type != QLatin1String(kTypeCalDav) && entry.type != QLatin1String(kTypeGoogle)) {
+    if (entry.type != QLatin1String(kTypeCalDav) && entry.type != QLatin1String(kTypeGoogle) && entry.type != QLatin1String(kTypeMicrosoft)) {
         return;
     }
     entry.pendingPush.insert(uid);
@@ -651,6 +861,64 @@ void CalendarManager::pushEvent(LocalCalendar &entry, const Event::Ptr &event)
         return;
     }
 
+    if (entry.type == QLatin1String(kTypeMicrosoft)) {
+        QString email;
+        QString refreshToken;
+        if (!CredentialStore::readMicrosoftTokens(entry.accountId, email, refreshToken)) {
+            Q_EMIT syncError(entry.id, i18nc("@info", "No stored credentials for this account."));
+            return;
+        }
+
+        const QJsonObject json = eventToMicrosoftJson(event);
+        QString microsoftEventId;
+        const auto syncIt = entry.syncItems.constFind(event->uid());
+        if (syncIt != entry.syncItems.constEnd()) {
+            microsoftEventId = syncIt.value().first;
+        }
+
+        auto *client = new MicrosoftGraphClient(this);
+        const QString calendarId = entry.id;
+        const QString uid = event->uid();
+        const QString remoteCalendarId = entry.remoteUrl;
+
+        connect(client, &MicrosoftGraphClient::eventPut, this,
+                [this, client, calendarId, uid](const QString &eventId, const QString &etag, const QString &error) {
+                    client->deleteLater();
+
+                    if (!error.isEmpty()) {
+                        Q_EMIT syncError(calendarId, error);
+                        return;
+                    }
+
+                    LocalCalendar *target = findCalendarById(calendarId);
+                    if (!target) {
+                        return;
+                    }
+
+                    // Newly created events get a server-assigned id; rename the local UID to match.
+                    if (uid != eventId) {
+                        const Event::Ptr existing = target->calendar->event(uid);
+                        if (existing) {
+                            const Event::Ptr clone(existing->clone());
+                            clone->setUid(eventId);
+                            target->calendar->deleteEvent(existing);
+                            target->calendar->addEvent(clone);
+                            target->storage->save();
+                            Q_EMIT calendarChanged();
+                        }
+                        target->syncItems.remove(uid);
+                        target->pendingPush.remove(uid);
+                    }
+
+                    target->syncItems.insert(eventId, qMakePair(eventId, etag));
+                    target->pendingPush.remove(eventId);
+                    saveSyncState(*target);
+                });
+
+        client->putEvent(refreshToken, remoteCalendarId, microsoftEventId, json);
+        return;
+    }
+
     if (entry.type != QLatin1String(kTypeCalDav)) {
         return;
     }
@@ -723,6 +991,30 @@ void CalendarManager::pushDelete(LocalCalendar &entry, const QString &uid)
         return;
     }
 
+    if (entry.type == QLatin1String(kTypeMicrosoft)) {
+        const auto syncIt = entry.syncItems.constFind(uid);
+        if (syncIt == entry.syncItems.constEnd()) {
+            return;
+        }
+
+        QString email;
+        QString refreshToken;
+        if (!CredentialStore::readMicrosoftTokens(entry.accountId, email, refreshToken)) {
+            return;
+        }
+
+        const QString microsoftEventId = syncIt.value().first;
+        const QString remoteCalendarId = entry.remoteUrl;
+        entry.syncItems.remove(uid);
+        entry.pendingPush.remove(uid);
+        saveSyncState(entry);
+
+        auto *client = new MicrosoftGraphClient(this);
+        connect(client, &MicrosoftGraphClient::eventDeleted, client, &QObject::deleteLater);
+        client->deleteEvent(refreshToken, remoteCalendarId, microsoftEventId);
+        return;
+    }
+
     if (entry.type != QLatin1String(kTypeCalDav)) {
         return;
     }
@@ -779,14 +1071,14 @@ bool CalendarManager::removeCalendar(const QString &calendarId)
             const LocalCalendar removed = m_calendars.at(i);
 
             QFile::remove(icsPathFor(calendarId));
-            if (removed.type == QLatin1String(kTypeCalDav) || removed.type == QLatin1String(kTypeGoogle)) {
+            if (removed.type == QLatin1String(kTypeCalDav) || removed.type == QLatin1String(kTypeGoogle) || removed.type == QLatin1String(kTypeMicrosoft)) {
                 QFile::remove(syncStatePath(calendarId));
             }
             m_calendars.removeAt(i);
             saveCalendarsMeta();
 
-            // If this was the last calendar for its CalDAV/Google account, drop the account too.
-            if (removed.type == QLatin1String(kTypeCalDav) || removed.type == QLatin1String(kTypeGoogle)) {
+            // If this was the last calendar for its CalDAV/Google/Microsoft account, drop the account too.
+            if (removed.type == QLatin1String(kTypeCalDav) || removed.type == QLatin1String(kTypeGoogle) || removed.type == QLatin1String(kTypeMicrosoft)) {
                 bool accountStillUsed = false;
                 for (const LocalCalendar &other : m_calendars) {
                     if (other.accountId == removed.accountId) {
@@ -986,6 +1278,77 @@ void CalendarManager::addGoogleAccount()
     client->authenticate();
 }
 
+void CalendarManager::addMicrosoftAccount()
+{
+    auto *client = new MicrosoftGraphClient(this);
+    connect(client, &MicrosoftGraphClient::authenticated, this, [this, client](const QString &refreshToken, const QString &email, const QString &error) {
+        if (!error.isEmpty()) {
+            client->deleteLater();
+            Q_EMIT microsoftAccountAdded(QString(), 0, error);
+            return;
+        }
+
+        const QString accountId = CalFormat::createUniqueId();
+        if (!CredentialStore::storeMicrosoftTokens(accountId, email, refreshToken)) {
+            client->deleteLater();
+            Q_EMIT microsoftAccountAdded(QString(), 0, i18nc("@info", "Could not save credentials to KWallet."));
+            return;
+        }
+
+        Account account;
+        account.id = accountId;
+        account.type = QString::fromLatin1(kTypeMicrosoft);
+        account.username = email;
+        m_accounts.append(account);
+        saveAccountsMeta();
+
+        connect(client, &MicrosoftGraphClient::calendarsListed, this,
+                [this, client, accountId](const QList<MicrosoftGraphClient::CalendarInfo> &discovered, const QString &error) {
+                    client->deleteLater();
+
+                    if (!error.isEmpty()) {
+                        Q_EMIT microsoftAccountAdded(accountId, 0, error);
+                        return;
+                    }
+                    if (discovered.isEmpty()) {
+                        Q_EMIT microsoftAccountAdded(accountId, 0, i18nc("@info", "No calendars were found on this account."));
+                        return;
+                    }
+
+                    QStringList newCalendarIds;
+                    for (const MicrosoftGraphClient::CalendarInfo &info : discovered) {
+                        LocalCalendar entry;
+                        entry.id = CalFormat::createUniqueId();
+                        entry.name = info.displayName;
+                        entry.color = info.color.size() >= 7 ? info.color.left(7) : QString::fromLatin1(kDefaultCalendarColor);
+                        entry.visible = true;
+                        entry.type = QString::fromLatin1(kTypeMicrosoft);
+                        entry.accountId = accountId;
+                        entry.remoteUrl = info.id;
+                        entry.calendar = MemoryCalendar::Ptr(new MemoryCalendar(QTimeZone::systemTimeZone()));
+                        entry.storage = FileStorage::Ptr(new FileStorage(entry.calendar, icsPathFor(entry.id)));
+                        entry.storage->load();
+
+                        m_calendars.append(entry);
+                        newCalendarIds.append(entry.id);
+                    }
+                    saveCalendarsMeta();
+
+                    Q_EMIT calendarsChanged();
+                    Q_EMIT calendarChanged();
+                    Q_EMIT microsoftAccountAdded(accountId, newCalendarIds.size(), QString());
+
+                    for (const QString &id : newCalendarIds) {
+                        syncCalendar(id);
+                    }
+                });
+
+        client->listCalendars(refreshToken);
+    });
+
+    client->authenticate();
+}
+
 void CalendarManager::syncCalendar(const QString &calendarId)
 {
     LocalCalendar *entry = findCalendarById(calendarId);
@@ -997,6 +1360,8 @@ void CalendarManager::syncCalendar(const QString &calendarId)
         syncCalDavCalendar(*entry);
     } else if (entry->type == QLatin1String(kTypeGoogle)) {
         syncGoogleCalendar(*entry);
+    } else if (entry->type == QLatin1String(kTypeMicrosoft)) {
+        syncMicrosoftCalendar(*entry);
     }
 }
 
@@ -1231,10 +1596,97 @@ void CalendarManager::syncGoogleCalendar(LocalCalendar &entry, bool forceFullRes
     client->fetchEvents(refreshToken, remoteCalendarId, syncToken);
 }
 
+void CalendarManager::syncMicrosoftCalendar(LocalCalendar &entry)
+{
+    syncMicrosoftCalendar(entry, false);
+}
+
+void CalendarManager::syncMicrosoftCalendar(LocalCalendar &entry, bool forceFullResync)
+{
+    QString email;
+    QString refreshToken;
+    if (!CredentialStore::readMicrosoftTokens(entry.accountId, email, refreshToken)) {
+        Q_EMIT syncError(entry.id, i18nc("@info", "No stored credentials for this account."));
+        return;
+    }
+
+    Q_EMIT syncStarted(entry.id);
+
+    const QString calendarId = entry.id;
+    const QString remoteCalendarId = entry.remoteUrl;
+    const QString deltaLink = forceFullResync ? QString() : entry.syncToken;
+
+    auto *client = new MicrosoftGraphClient(this);
+    connect(client, &MicrosoftGraphClient::eventsFetched, this,
+            [this, client, calendarId](const QList<MicrosoftGraphClient::RemoteEvent> &events, const QString &nextDeltaLink, bool deltaInvalid, const QString &error) {
+                client->deleteLater();
+
+                LocalCalendar *target = findCalendarById(calendarId);
+                if (!target) {
+                    return;
+                }
+
+                if (deltaInvalid) {
+                    target->syncToken.clear();
+                    target->syncItems.clear();
+                    saveSyncState(*target);
+                    syncMicrosoftCalendar(*target, true);
+                    return;
+                }
+
+                if (!error.isEmpty()) {
+                    Q_EMIT syncError(calendarId, error);
+                    return;
+                }
+
+                for (const MicrosoftGraphClient::RemoteEvent &remote : events) {
+                    if (target->pendingPush.contains(remote.id)) {
+                        // Local edit not pushed yet: keep our local copy, retry the push below.
+                        continue;
+                    }
+
+                    if (remote.removed) {
+                        const Event::Ptr existing = target->calendar->event(remote.id);
+                        if (existing) {
+                            target->calendar->deleteEventInstances(existing);
+                            target->calendar->deleteEvent(existing);
+                        }
+                        target->syncItems.remove(remote.id);
+                        continue;
+                    }
+
+                    const QString itemType = remote.json.value(QStringLiteral("type")).toString();
+                    if (itemType == QLatin1String("occurrence") || itemType == QLatin1String("exception")) {
+                        // Recurrence exception instances are not yet supported (v1 limitation).
+                        continue;
+                    }
+
+                    const Event::Ptr event = microsoftJsonToEvent(remote.json);
+                    const Event::Ptr existing = target->calendar->event(event->uid());
+                    if (existing) {
+                        target->calendar->deleteEvent(existing);
+                    }
+                    target->calendar->addEvent(event);
+                    target->syncItems.insert(event->uid(), qMakePair(event->uid(), remote.etag));
+                }
+
+                target->syncToken = nextDeltaLink;
+                target->storage->save();
+                saveSyncState(*target);
+
+                Q_EMIT calendarChanged();
+                Q_EMIT syncFinished(calendarId);
+
+                retryPendingPushes(*target);
+            });
+
+    client->fetchEvents(refreshToken, remoteCalendarId, deltaLink);
+}
+
 void CalendarManager::syncAll()
 {
     for (const LocalCalendar &entry : m_calendars) {
-        if (entry.type == QLatin1String(kTypeCalDav) || entry.type == QLatin1String(kTypeGoogle)) {
+        if (entry.type == QLatin1String(kTypeCalDav) || entry.type == QLatin1String(kTypeGoogle) || entry.type == QLatin1String(kTypeMicrosoft)) {
             syncCalendar(entry.id);
         }
     }

@@ -21,6 +21,12 @@ bool storeGoogleTokens(const QString &accountId, const QString &email, const QSt
 /// Reads back previously stored Google OAuth tokens. Returns false if not found.
 bool readGoogleTokens(const QString &accountId, QString &email, QString &refreshToken);
 
+/// Stores (overwriting any existing) Microsoft OAuth tokens for the given account id.
+bool storeMicrosoftTokens(const QString &accountId, const QString &email, const QString &refreshToken);
+
+/// Reads back previously stored Microsoft OAuth tokens. Returns false if not found.
+bool readMicrosoftTokens(const QString &accountId, QString &email, QString &refreshToken);
+
 /// Removes stored credentials for the given account id.
 bool removeCredentials(const QString &accountId);
 

@@ -1,0 +1,18 @@
+#pragma once
+
+// Copy this file to microsoftoauthconfig.h (gitignored) and fill in the
+// Application (client) ID of an Azure AD app registration (Azure Portal ->
+// App registrations -> New registration):
+//   - Supported account types: "Accounts in any organizational directory
+//     and personal Microsoft accounts".
+//   - Platform: "Mobile and desktop applications", redirect URI
+//     http://localhost (matches any loopback port).
+//   - "Allow public client flows" = Yes (public client, no secret needed;
+//     PKCE only).
+//   - API permissions (delegated, Microsoft Graph): Calendars.ReadWrite,
+//     User.Read, offline_access, openid, email.
+
+namespace MicrosoftOAuthConfig
+{
+constexpr auto kClientId = "YOUR_APPLICATION_CLIENT_ID";
+}

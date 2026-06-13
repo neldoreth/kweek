@@ -90,6 +90,26 @@ bool CredentialStore::readGoogleTokens(const QString &accountId, QString &email,
     return true;
 }
 
+bool CredentialStore::storeMicrosoftTokens(const QString &accountId, const QString &email, const QString &refreshToken)
+{
+    return writeMap(accountId, {
+        {QStringLiteral("email"), email},
+        {QStringLiteral("refreshToken"), refreshToken},
+    });
+}
+
+bool CredentialStore::readMicrosoftTokens(const QString &accountId, QString &email, QString &refreshToken)
+{
+    QMap<QString, QString> map;
+    if (!readMap(accountId, map)) {
+        return false;
+    }
+
+    email = map.value(QStringLiteral("email"));
+    refreshToken = map.value(QStringLiteral("refreshToken"));
+    return true;
+}
+
 bool CredentialStore::removeCredentials(const QString &accountId)
 {
     KWallet::Wallet *wallet = KWallet::Wallet::openWallet(KWallet::Wallet::NetworkWallet(), 0, KWallet::Wallet::Synchronous);

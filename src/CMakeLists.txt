@@ -5,6 +5,7 @@ qt_add_executable(kweek
     core/credentialstore.cpp
     core/caldavclient.cpp
     core/googlecalendarclient.cpp
+    core/microsoftgraphclient.cpp
 )
 
 qt_add_qml_module(kweek
@@ -17,6 +18,7 @@ qt_add_qml_module(kweek
         qml/CalendarSidebar.qml
         qml/AddCalDavAccountDialog.qml
         qml/AddGoogleAccountDialog.qml
+        qml/AddMicrosoftAccountDialog.qml
         qml/AgendaView.qml
         qml/MonthView.qml
         qml/WeekView.qml

@@ -82,14 +82,14 @@ ColumnLayout {
             }
 
             Controls.BusyIndicator {
-                visible: (modelData.type === "caldav" || modelData.type === "google") && root.syncingIds[modelData.id]
+                visible: (modelData.type === "caldav" || modelData.type === "google" || modelData.type === "microsoft") && root.syncingIds[modelData.id]
                 implicitWidth: Kirigami.Units.iconSizes.small
                 implicitHeight: Kirigami.Units.iconSizes.small
             }
 
             Controls.ToolButton {
                 icon.name: "view-refresh"
-                visible: (modelData.type === "caldav" || modelData.type === "google") && !root.syncingIds[modelData.id]
+                visible: (modelData.type === "caldav" || modelData.type === "google" || modelData.type === "microsoft") && !root.syncingIds[modelData.id]
                 onClicked: CalendarManager.syncCalendar(modelData.id)
             }
 
@@ -128,12 +128,24 @@ ColumnLayout {
         onClicked: addGoogleAccountDialog.open2()
     }
 
+    Controls.Button {
+        Layout.fillWidth: true
+        Layout.margins: Kirigami.Units.smallSpacing
+        icon.name: "cloud-upload"
+        text: i18nc("@action:button", "Connect Microsoft account…")
+        onClicked: addMicrosoftAccountDialog.open2()
+    }
+
     AddCalDavAccountDialog {
         id: addAccountDialog
     }
 
     AddGoogleAccountDialog {
         id: addGoogleAccountDialog
+    }
+
+    AddMicrosoftAccountDialog {
+        id: addMicrosoftAccountDialog
     }
 
     Item { Layout.fillHeight: true }
